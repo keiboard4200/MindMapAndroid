@@ -278,10 +278,99 @@ class MainActivity : Activity() {
     }
 
     private fun colorMenu(id: Long) {
-        val colors = arrayOf("青", "緑", "紫", "橙", "赤", "水色")
-        AlertDialog.Builder(this).setTitle("ノードの色").setItems(colors) { _, which ->
-            editTransaction { map.find(id)?.color = MapState.palette[which] }
-        }.show()
+        if (map.find(id) == null) return
+        val names = listOf("青", "緑", "紫", "オレンジ", "赤", "シアン",
+            "藍色", "ティール", "グレー", "ライム")
+        val labels = names.mapIndexed { i, label ->
+            SpannableString("●   $label").apply {
+                setSpan(ForegroundColorSpan(MapState.palette[i]), 0, 1, 0)
+            }
+        }.toTypedArray<CharSequence>()
+        val subtreeBox = CheckBox(this).apply {
+            text = "配下のノードにも同じ色を適用"
+            setPadding(dp(20), dp(10), dp(8), dp(8))
+        }
+        AlertDialog.Builder(this).setTitle("ノードの色")
+            .setView(subtreeBox)
+            .setItems(labels) { _, which ->
+                editTransaction {
+                    val node = map.find(id) ?: return@editTransaction
+                    val targets = if (subtreeBox.isChecked)
+                        listOf(node) + map.descendants(id) else listOf(node)
+                    targets.forEach { it.color = MapState.palette[which] }
+                }
+            }.setNegativeButton("キャンセル", null).show()
+    }
+
+    private fun showAutoLayoutDialog() {
+        val selected = canvas.selectedId
+        val section = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(4), dp(20), dp(4))
+        }
+        fun heading(label: String) = TextView(this).apply {
+            text = label
+            textSize = 14f
+            setPadding(0, dp(12), 0, dp(4))
+        }
+        val scope = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val all = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "マップ全体"
+            isChecked = true
+        }
+        val branch = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "選択ノードの枝のみ"
+            isEnabled = selected != null
+        }
+        scope.addView(all)
+        scope.addView(branch)
+        section.addView(heading("整列する範囲"))
+        section.addView(scope)
+        val spacing = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val compact = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "コンパクト（150）"
+        }
+        val normal = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "標準（220）"
+            isChecked = true
+        }
+        val wide = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "広め（300）"
+        }
+        spacing.addView(compact)
+        spacing.addView(normal)
+        spacing.addView(wide)
+        section.addView(heading("ノードの間隔"))
+        section.addView(spacing)
+        section.addView(TextView(this).apply {
+            text = "放射状に整列します。自由配置は整列実行時だけ変更され、Undoで復元できます。"
+            textSize = 12f
+            setPadding(0, dp(12), 0, dp(8))
+        })
+        val scroller = android.widget.ScrollView(this).apply { addView(section) }
+        AlertDialog.Builder(this).setTitle("自動整列の設定")
+            .setView(scroller)
+            .setNegativeButton("キャンセル", null)
+            .setPositiveButton("整列を実行") { _, _ ->
+                val selectedOnly = scope.checkedRadioButtonId == branch.id
+                val gap = when (spacing.checkedRadioButtonId) {
+                    compact.id -> 150f
+                    wide.id -> 300f
+                    else -> 220f
+                }
+                var changed = 0
+                editTransaction {
+                    changed = AutoLayout.apply(map, selected,
+                        AutoLayout.Settings(selectedOnly, gap))
+                }
+                if (!selectedOnly && changed > 0) canvas.fitAll()
+                toast(if (changed > 0) "${changed}ノードを整列しました" else "移動するノードがありません")
+            }.show()
     }
 
     private fun showAppMenu() {
