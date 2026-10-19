@@ -28,6 +28,7 @@ class MindMapView(context: Context) : View(context) {
     var groupDrag = false
     var onSelectionChanged: (Long?) -> Unit = {}
     var onEditRequested: (Long) -> Unit = {}
+    var onDoubleTap: (Long) -> Unit = {}
     var onMoveFinished: (String) -> Unit = {}
 
     private val densityScale = resources.displayMetrics.density
@@ -57,7 +58,7 @@ class MindMapView(context: Context) : View(context) {
 
     init {
         isClickable = true
-        setBackgroundColor(Color.rgb(247, 249, 251))
+        setBackgroundColor(Color.rgb(16, 22, 32))
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -162,7 +163,7 @@ class MindMapView(context: Context) : View(context) {
             if (selectedId == node.id) {
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 3.2f
-                paint.color = Color.rgb(20, 61, 100)
+                paint.color = Color.rgb(230, 241, 253)
                 rect.inset(-3f, -3f)
                 c.drawRoundRect(rect, 12f, 12f, paint)
                 rect.inset(3f, 3f)
@@ -190,7 +191,7 @@ class MindMapView(context: Context) : View(context) {
         }
         c.restore()
         paint.style = Paint.Style.FILL
-        paint.color = Color.rgb(84, 100, 121)
+        paint.color = Color.rgb(194, 207, 227)
         paint.textSize = 12f * densityScale
         c.drawText("${(zoom * 100).toInt()}% · ${visible.size}/${map.nodes.size}ノード",
             12f * densityScale, 21f * densityScale, paint)
@@ -340,7 +341,8 @@ class MindMapView(context: Context) : View(context) {
                     if (tappedId != null) {
                         val now = SystemClock.uptimeMillis()
                         if (previousTapId == tappedId && now - previousTapTime < 330L) {
-                            focusOn(tappedId)
+                            select(tappedId)
+                            onDoubleTap(tappedId)
                             previousTapId = null
                         } else {
                             select(tappedId)
