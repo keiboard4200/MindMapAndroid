@@ -83,10 +83,12 @@ class MindMapView(context: Context) : View(context) {
 
     fun fitAll() {
         if (width == 0 || height == 0 || map.nodes.isEmpty()) return
-        val minX = map.nodes.minOf { it.x } - 95f
-        val maxX = map.nodes.maxOf { it.x } + 95f
-        val minY = map.nodes.minOf { it.y } - 60f
-        val maxY = map.nodes.maxOf { it.y } + 60f
+        // Hidden descendants should not force an unnecessarily tiny fit.
+        val shown = map.visibleNodes(3.2f)
+        val minX = shown.minOf { it.x } - 95f
+        val maxX = shown.maxOf { it.x } + 95f
+        val minY = shown.minOf { it.y } - 60f
+        val maxY = shown.maxOf { it.y } + 60f
         zoom = min(
             (width - 24f * densityScale) / (maxX - minX) / densityScale,
             (height - 24f * densityScale) / (maxY - minY) / densityScale
@@ -148,8 +150,9 @@ class MindMapView(context: Context) : View(context) {
                 val d = max(18f, abs(bx - ax) * 0.42f)
                 cubicTo(ax + dir * d, p.y, bx - dir * d, node.y, bx, node.y)
             }
-            paint.color = node.color
-            paint.alpha = 190
+            // Connection colors are independent of each node's fill color.
+            paint.color = Color.rgb(106, 125, 149)
+            paint.alpha = 195
             c.drawPath(path, paint)
         }
 
@@ -174,6 +177,13 @@ class MindMapView(context: Context) : View(context) {
             paint.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             val label = ellipsize(node.title, w - 20f)
             c.drawText(label, node.x - paint.measureText(label) / 2f, node.y + 5f, paint)
+
+            // A small marker indicates attached notes without showing their full text.
+            if (node.note.isNotBlank()) {
+                paint.color = Color.rgb(249, 232, 164)
+                paint.style = Paint.Style.FILL
+                c.drawCircle(node.x + w / 2f - 7f, node.y - 17f, 4.5f, paint)
+            }
 
             val hidden = map.hiddenCount(node.id, ids)
             if (hidden > 0) {
