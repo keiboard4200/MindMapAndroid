@@ -13,17 +13,19 @@ import kotlin.math.sin
  */
 object AutoLayout {
     enum class Style { RADIAL, LEFT_TO_RIGHT }
+    enum class Align { TOP, CENTER, BOTTOM }
     data class Settings(
         val selectedBranchOnly: Boolean,
         val spacing: Float,
-        val style: Style = Style.RADIAL
+        val style: Style = Style.RADIAL,
+        val alignment: Align = Align.CENTER
     )
 
     fun apply(map: MapState, selectedId: Long?, settings: Settings): Int {
         val center = if (settings.selectedBranchOnly) map.find(selectedId) ?: return 0
                      else map.root()
         if (settings.style == Style.LEFT_TO_RIGHT) {
-            return applyLeftToRight(map, center, settings.spacing)
+            return applyLeftToRight(map, center, settings.spacing, settings.alignment)
         }
         val childrenByParent = map.nodes.groupBy { it.parentId }
         fun children(id: Long): List<MindNode> = childrenByParent[id].orEmpty()
@@ -94,7 +96,7 @@ object AutoLayout {
      * Each leaf owns one vertical slot. Internal nodes sit midway between
      * their outermost descendant leaves. No auto layout happens on edits or launch.
      */
-    private fun applyLeftToRight(map: MapState, root: MindNode, spacing: Float): Int {
+    private fun applyLeftToRight(map: MapState, root: MindNode, spacing: Float, alignment: Align): Int {
         val byParent = map.nodes.groupBy { it.parentId }
         val children = HashMap<Long, List<MindNode>>()
         fun sortedChildren(node: MindNode): List<MindNode> =
@@ -111,21 +113,25 @@ object AutoLayout {
         val depth = HashMap<Long, Int>()
         var nextLeaf = 0f
 
-        fun allocate(n: MindNode, d: Int): Float {
+        data class Range(val first: Float, val last: Float)
+        fun allocate(n: MindNode, d: Int): Range {
             depth[n.id] = d
             val kids = sortedChildren(n)
-            val y = if (kids.isEmpty()) {
-                val value = nextLeaf
+            val range = if (kids.isEmpty()) {
+                val leaf = nextLeaf
                 nextLeaf += 1f
-                value
+                Range(leaf, leaf)
             } else {
-                val first = allocate(kids.first(), d + 1)
-                var last = first
-                for (child in kids.drop(1)) last = allocate(child, d + 1)
-                (first + last) / 2f
+                val ranges = kids.map { allocate(it, d + 1) }
+                Range(ranges.first().first, ranges.last().last)
             }
-            slot[n.id] = y
-            return y
+            // The parent can attach to its descendants at top, centre or bottom.
+            slot[n.id] = when (alignment) {
+                Align.TOP -> range.first
+                Align.CENTER -> (range.first + range.last) / 2f
+                Align.BOTTOM -> range.last
+            }
+            return range
         }
         allocate(root, 0)
         val baseSlot = slot[root.id] ?: 0f
