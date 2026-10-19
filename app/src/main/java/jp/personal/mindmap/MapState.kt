@@ -22,7 +22,9 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
         val palette = listOf(
             Color.rgb(49, 118, 173), Color.rgb(58, 147, 113),
             Color.rgb(149, 99, 170), Color.rgb(197, 137, 65),
-            Color.rgb(176, 89, 109), Color.rgb(69, 144, 158)
+            Color.rgb(176, 89, 109), Color.rgb(69, 144, 158),
+            Color.rgb(73, 96, 174), Color.rgb(28, 130, 125),
+            Color.rgb(90, 106, 125), Color.rgb(105, 144, 56)
         )
 
         fun blank() = MapState("新しいマインドマップ", mutableListOf(
