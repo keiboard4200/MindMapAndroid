@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
         android:allowBackup="false"
-        android:label="MindMap"
+        android:label="MindMap v0.2"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
         <activity
