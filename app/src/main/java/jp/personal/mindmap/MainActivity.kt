@@ -4,6 +4,13 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
+import android.content.res.ColorStateList
+import android.text.SpannableString
+import android.text.style.ForegroundColorSpan
+import android.widget.CheckBox
+import android.widget.RadioGroup
+import android.widget.RadioButton
+import android.view.View
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
@@ -50,13 +57,15 @@ class MainActivity : Activity() {
         minHeight = 0
         minimumHeight = 0
         setPadding(dp(4), 0, dp(4), 0)
+        setTextColor(Color.rgb(233, 242, 253))
+        backgroundTintList = ColorStateList.valueOf(Color.rgb(37, 50, 67))
         setOnClickListener { onClick() }
     }
 
     private fun setupScreen() {
         val main = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(247, 249, 251))
+            setBackgroundColor(Color.rgb(16, 22, 32))
         }
         main.setOnApplyWindowInsetsListener { view, insets ->
             val safe = if (android.os.Build.VERSION.SDK_INT >= 30)
@@ -75,7 +84,7 @@ class MainActivity : Activity() {
         titleView = TextView(this).apply {
             text = map.title
             textSize = 16f
-            setTextColor(Color.rgb(24, 42, 60))
+            setTextColor(Color.rgb(237, 244, 252))
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             setOnClickListener { renameMap() }
@@ -83,6 +92,8 @@ class MainActivity : Activity() {
         top.addView(titleView, LinearLayout.LayoutParams(0, dp(52), 1f).apply {
             gravity = Gravity.CENTER_VERTICAL
         })
+        top.addView(actionButton("整列") { showAutoLayoutDialog() },
+            LinearLayout.LayoutParams(dp(60), dp(48)))
         top.addView(actionButton("全体") { canvas.fitAll() },
             LinearLayout.LayoutParams(dp(60), dp(48)))
         top.addView(actionButton("⋮") { showAppMenu() },
@@ -93,13 +104,14 @@ class MainActivity : Activity() {
         canvas.onSelectionChanged = { id ->
             branchMode = false
             canvas.groupDrag = false
-            modeButton.text = "単独移動"
+            modeButton.text = "単独"
             titleView.text = if (id != null) {
                 val node = map.find(id)
                 "${node?.title ?: ""} · ${map.descendants(id).size}件"
             } else map.title
         }
         canvas.onEditRequested = { id -> showNodeMenu(id) }
+        canvas.onDoubleTap = { id -> renameNode(id) }
         canvas.onMoveFinished = { previous ->
             if (previous != map.asJson()) {
                 pushUndo(previous)
@@ -119,10 +131,14 @@ class MainActivity : Activity() {
             bottom.addView(button, LinearLayout.LayoutParams(0, dp(54), 1f))
             return button
         }
-        addBottom("＋ 子を追加") { addChild() }
-        modeButton = addBottom("単独移動") { toggleMoveMode() }
-        addBottom("↶ 戻す") { undo() }
-        addBottom("↷ 進む") { redo() }
+        addBottom("＋ 子") { addChild() }
+        modeButton = addBottom("単独") { toggleMoveMode() }
+        addBottom("色") {
+            canvas.selectedId?.let { colorMenu(it) }
+                ?: toast("色を変えるノードを選択してください")
+        }
+        addBottom("↶") { undo() }
+        addBottom("↷") { redo() }
         main.addView(bottom)
     }
 
@@ -134,7 +150,7 @@ class MainActivity : Activity() {
         branchMode = !branchMode
         canvas.groupDrag = branchMode
         val count = map.descendants(id).size + 1
-        modeButton.text = if (branchMode) "枝ごと ($count)" else "単独移動"
+        modeButton.text = if (branchMode) "枝($count)" else "単独"
         toast(if (branchMode) "$count ノードをまとめて移動" else "選択ノードだけ移動")
     }
 
@@ -174,7 +190,7 @@ class MainActivity : Activity() {
         titleView.text = map.title
         branchMode = false
         canvas.groupDrag = false
-        modeButton.text = "単独移動"
+        modeButton.text = "単独"
         if (!preserveViewport) canvas.post { canvas.fitAll() }
         save()
     }
@@ -241,14 +257,15 @@ class MainActivity : Activity() {
     private fun showNodeMenu(id: Long) {
         val node = map.find(id) ?: return
         val names = arrayOf("名前を編集", "子ノードを追加", "色を変更",
-            if (node.collapsed) "展開" else "折りたたむ", "この枝を削除")
+            if (node.collapsed) "展開" else "折りたたむ", "このノードを中心に表示", "この枝を削除")
         AlertDialog.Builder(this).setTitle(node.title).setItems(names) { _, which ->
             when (which) {
                 0 -> renameNode(id)
                 1 -> { canvas.select(id); addChild() }
                 2 -> colorMenu(id)
                 3 -> editTransaction { node.collapsed = !node.collapsed }
-                4 -> if (id == map.root().id) toast("中心ノードは削除できません") else
+                4 -> canvas.focusOn(id)
+                5 -> if (id == map.root().id) toast("中心ノードは削除できません") else
                     AlertDialog.Builder(this)
                         .setMessage("選択したノードと子孫をすべて削除しますか？")
                         .setNegativeButton("キャンセル", null)
@@ -269,15 +286,16 @@ class MainActivity : Activity() {
 
     private fun showAppMenu() {
         val options = arrayOf("新しいマップ", "100ノードのテストマップ",
-            "JSONを書き出す", "JSONを読み込む", "全体にフィット", "操作方法")
+            "自動整列の設定", "JSONを書き出す", "JSONを読み込む", "全体にフィット", "操作方法")
         AlertDialog.Builder(this).setTitle("マップ操作").setItems(options) { _, which ->
             when (which) {
                 0 -> confirmNewMap(MapState.blank())
                 1 -> confirmNewMap(MapState.sample100())
-                2 -> exportJson()
-                3 -> importJson()
-                4 -> canvas.fitAll()
-                5 -> showHelp()
+                2 -> showAutoLayoutDialog()
+                3 -> exportJson()
+                4 -> importJson()
+                5 -> canvas.fitAll()
+                6 -> showHelp()
             }
         }.show()
     }
@@ -299,8 +317,8 @@ class MainActivity : Activity() {
             "・ノードをドラッグ：単独または枝ごと移動\n" +
             "・空白をドラッグ：マップ移動\n" +
             "・2本指：拡大・縮小\n" +
-            "・ノードを2回タップ：その位置へ拡大\n" +
-            "・ノード長押し：編集・折りたたみ・削除\n" +
+            "・ノードを2回タップ：名前編集\n" +
+            "・ノード長押し：編集・色変更・折りたたみ・削除\n" +
             "・全体：マップ全体を表示\n" +
             "・大切なデータはJSONでバックアップしてください"
         ).setPositiveButton("閉じる", null).show()
