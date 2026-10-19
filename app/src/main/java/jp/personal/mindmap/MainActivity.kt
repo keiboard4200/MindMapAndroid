@@ -215,12 +215,17 @@ class MainActivity : Activity() {
     }
 
     private fun addChild() {
-        val parent = canvas.selectedId ?: map.root().id
-        lateinit var added: MindNode
-        editTransaction { added = map.addChild(parent) }
-        canvas.select(added.id)
-        canvas.focusOn(added.id)
-        renameNode(added.id)
+        val parentId = canvas.selectedId ?: map.root().id
+        // Input first: no default text to erase, and cancel creates no node.
+        inputDialog("新しいノード", "", "ノード名を入力") { name ->
+            lateinit var added: MindNode
+            editTransaction {
+                added = map.addChild(parentId)
+                added.title = name.take(300)
+            }
+            canvas.select(added.id)
+            canvas.focusOn(added.id)
+        }
     }
 
     private fun renameMap() {
@@ -238,20 +243,31 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun inputDialog(title: String, initial: String, done: (String) -> Unit) {
+    private fun inputDialog(
+        title: String, initial: String, hint: String = "入力してください",
+        done: (String) -> Unit
+    ) {
         val edit = EditText(this).apply {
             setSingleLine(false)
             maxLines = 4
             setText(initial)
+            setHint(hint)
             selectAll()
             setPadding(dp(16), dp(10), dp(16), dp(10))
         }
-        AlertDialog.Builder(this).setTitle(title).setView(edit)
+        val dialog = AlertDialog.Builder(this).setTitle(title).setView(edit)
             .setNegativeButton("キャンセル", null)
             .setPositiveButton("保存") { _, _ ->
                 val result = edit.text.toString().trim()
                 if (result.isNotEmpty()) done(result) else toast("空の名前は保存できません")
-            }.show()
+            }.create()
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        dialog.setOnShowListener {
+            edit.requestFocus()
+            val keyboard = getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+            keyboard.showSoftInput(edit, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }
+        dialog.show()
     }
 
     private fun showNodeMenu(id: Long) {
@@ -326,6 +342,20 @@ class MainActivity : Activity() {
         }
         scope.addView(all)
         scope.addView(branch)
+        val layoutStyle = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val radialStyle = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "放射状（中心から全方向）"
+            isChecked = true
+        }
+        val rightTreeStyle = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "左→右（ルートを左に配置）"
+        }
+        layoutStyle.addView(radialStyle)
+        layoutStyle.addView(rightTreeStyle)
+        section.addView(heading("整列形式"))
+        section.addView(layoutStyle)
         section.addView(heading("整列する範囲"))
         section.addView(scope)
         val spacing = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
@@ -348,7 +378,7 @@ class MainActivity : Activity() {
         section.addView(heading("ノードの間隔"))
         section.addView(spacing)
         section.addView(TextView(this).apply {
-            text = "放射状に整列します。自由配置は整列実行時だけ変更され、Undoで復元できます。"
+            text = "整列は「実行」したときだけ行います。左→右形式は親を左に、子を右に並べます。自由配置にはUndoで戻せます。"
             textSize = 12f
             setPadding(0, dp(12), 0, dp(8))
         })
@@ -365,8 +395,10 @@ class MainActivity : Activity() {
                 }
                 var changed = 0
                 editTransaction {
+                    val style = if (layoutStyle.checkedRadioButtonId == rightTreeStyle.id)
+                        AutoLayout.Style.LEFT_TO_RIGHT else AutoLayout.Style.RADIAL
                     changed = AutoLayout.apply(map, selected,
-                        AutoLayout.Settings(selectedOnly, gap))
+                        AutoLayout.Settings(selectedOnly, gap, style))
                 }
                 if (!selectedOnly && changed > 0) canvas.fitAll()
                 toast(if (changed > 0) "${changed}ノードを整列しました" else "移動するノードがありません")
