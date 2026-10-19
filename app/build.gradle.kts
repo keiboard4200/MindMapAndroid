@@ -8,7 +8,7 @@ android {
     namespace = "jp.personal.mindmap"
     compileSdk = 35
     defaultConfig {
-        applicationId = "jp.personal.mindmap"
+        applicationId = "jp.personal.mindmap.preview"
         minSdk = 26
         targetSdk = 35
         versionCode = 2
