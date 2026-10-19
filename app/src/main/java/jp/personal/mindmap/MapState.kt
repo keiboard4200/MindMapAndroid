@@ -143,14 +143,14 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
     fun hiddenCount(id: Long, visibleIds: Set<Long>) =
         descendants(id).count { it.id !in visibleIds }
 
-    fun addChild(parentId: Long): MindNode {
+    fun addChild(parentId: Long, title: String): MindNode {
         val p = find(parentId) ?: root()
         val siblings = children(p.id).size
         val angle = if (p.parentId == null) siblings * 2.0 * PI / 6.0
                     else kotlin.math.atan2(p.y.toDouble(), p.x.toDouble()) + (siblings - 1.5) * 0.3
         val radius = if (p.parentId == null) 210.0 else 150.0
         val node = MindNode((nodes.maxOfOrNull { it.id } ?: 0L) + 1L, p.id,
-            "新しいノード",
+            title,
             p.x + (radius * cos(angle)).toFloat(),
             p.y + (radius * sin(angle)).toFloat(), p.color)
         nodes.add(node)
