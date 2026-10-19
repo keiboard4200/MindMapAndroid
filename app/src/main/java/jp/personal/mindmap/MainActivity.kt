@@ -26,6 +26,13 @@ class MainActivity : Activity() {
     private lateinit var canvas: MindMapView
     private lateinit var titleView: TextView
     private lateinit var modeButton: Button
+    private lateinit var foldButton: Button
+    private var savedLayout = AutoLayout.Settings(
+        selectedBranchOnly = false,
+        spacing = 220f,
+        style = AutoLayout.Style.LEFT_TO_RIGHT,
+        alignment = AutoLayout.Align.CENTER
+    )
     private val undoStack = ArrayDeque<String>()
     private val redoStack = ArrayDeque<String>()
     private var branchMode = false
@@ -41,6 +48,7 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             MapState.blank()
         }
+        savedLayout = readLayoutSettings()
         setupScreen()
         canvas.map = map
         canvas.post { canvas.fitAll() }
@@ -92,8 +100,10 @@ class MainActivity : Activity() {
         top.addView(titleView, LinearLayout.LayoutParams(0, dp(52), 1f).apply {
             gravity = Gravity.CENTER_VERTICAL
         })
-        top.addView(actionButton("整列") { showAutoLayoutDialog() },
-            LinearLayout.LayoutParams(dp(60), dp(48)))
+        top.addView(actionButton("整列") { executeSavedLayout() },
+            LinearLayout.LayoutParams(dp(56), dp(48)))
+        top.addView(actionButton("設定") { showAutoLayoutDialog() },
+            LinearLayout.LayoutParams(dp(54), dp(48)))
         top.addView(actionButton("全体") { canvas.fitAll() },
             LinearLayout.LayoutParams(dp(60), dp(48)))
         top.addView(actionButton("⋮") { showAppMenu() },
@@ -105,6 +115,7 @@ class MainActivity : Activity() {
             branchMode = false
             canvas.groupDrag = false
             modeButton.text = "単独"
+            updateFoldButton()
             titleView.text = if (id != null) {
                 val node = map.find(id)
                 "${node?.title ?: ""} · ${map.descendants(id).size}件"
@@ -137,8 +148,14 @@ class MainActivity : Activity() {
             canvas.selectedId?.let { colorMenu(it) }
                 ?: toast("色を変えるノードを選択してください")
         }
+        addBottom("ノート") {
+            canvas.selectedId?.let { editNote(it) }
+                ?: toast("ノートを書くノードを選択してください")
+        }
+        foldButton = addBottom("畳む") { toggleFoldSelected() }
         addBottom("↶") { undo() }
         addBottom("↷") { redo() }
+        updateFoldButton()
         main.addView(bottom)
     }
 
@@ -191,6 +208,7 @@ class MainActivity : Activity() {
         branchMode = false
         canvas.groupDrag = false
         modeButton.text = "単独"
+        updateFoldButton()
         if (!preserveViewport) canvas.post { canvas.fitAll() }
         save()
     }
@@ -269,18 +287,63 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
+    private fun editNote(id: Long) {
+        val node = map.find(id) ?: return
+        val editor = EditText(this).apply {
+            setText(node.note)
+            hint = "このノードに関するメモを入力"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 5
+            maxLines = 12
+            gravity = Gravity.TOP or Gravity.START
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+            setSelection(text.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("ノート：${node.title}")
+            .setView(editor)
+            .setNegativeButton("キャンセル", null)
+            .setPositiveButton("保存") { _, _ ->
+                editTransaction { node.note = editor.text.toString().take(20000) }
+            }.show()
+    }
+
+    private fun toggleFoldSelected() {
+        val id = canvas.selectedId ?: run {
+            toast("折りたたむノードを選択してください")
+            return
+        }
+        val node = map.find(id) ?: return
+        if (map.children(id).isEmpty()) {
+            toast("子ノードがありません")
+            return
+        }
+        editTransaction { node.collapsed = !node.collapsed }
+        updateFoldButton()
+    }
+
+    private fun updateFoldButton() {
+        if (!::foldButton.isInitialized) return
+        val n = map.find(canvas.selectedId)
+        foldButton.isEnabled = n != null && map.children(n.id).isNotEmpty()
+        foldButton.text = if (n?.collapsed == true) "展開" else "畳む"
+    }
+
     private fun showNodeMenu(id: Long) {
         val node = map.find(id) ?: return
-        val names = arrayOf("名前を編集", "子ノードを追加", "色を変更",
-            if (node.collapsed) "展開" else "折りたたむ", "このノードを中心に表示", "この枝を削除")
+        val names = arrayOf("名前を編集", "子ノードを追加", "色を変更", "ノートを編集",
+            if (node.collapsed) "展開" else "子ノードを折りたたむ", "このノードを中心に表示", "この枝を削除")
         AlertDialog.Builder(this).setTitle(node.title).setItems(names) { _, which ->
             when (which) {
                 0 -> renameNode(id)
                 1 -> { canvas.select(id); addChild() }
                 2 -> colorMenu(id)
-                3 -> editTransaction { node.collapsed = !node.collapsed }
-                4 -> canvas.focusOn(id)
-                5 -> if (id == map.root().id) toast("中心ノードは削除できません") else
+                3 -> editNote(id)
+                4 -> { editTransaction { node.collapsed = !node.collapsed }; updateFoldButton() }
+                5 -> canvas.focusOn(id)
+                6 -> if (id == map.root().id) toast("中心ノードは削除できません") else
                     AlertDialog.Builder(this)
                         .setMessage("選択したノードと子孫をすべて削除しますか？")
                         .setNegativeButton("キャンセル", null)
@@ -301,20 +364,12 @@ class MainActivity : Activity() {
                 setSpan(ForegroundColorSpan(MapState.palette[i]), 0, 1, 0)
             }
         }.toTypedArray<CharSequence>()
-        val subtreeBox = CheckBox(this).apply {
-            text = "配下のノードにも同じ色を適用"
-            setPadding(dp(20), dp(10), dp(8), dp(8))
-        }
-        AlertDialog.Builder(this).setTitle("ノードの色")
-            .setView(subtreeBox)
+        AlertDialog.Builder(this).setTitle("選択ノードの色")
             .setItems(labels) { _, which ->
-                editTransaction {
-                    val node = map.find(id) ?: return@editTransaction
-                    val targets = if (subtreeBox.isChecked)
-                        listOf(node) + map.descendants(id) else listOf(node)
-                    targets.forEach { it.color = MapState.palette[which] }
-                }
-            }.setNegativeButton("キャンセル", null).show()
+                editTransaction { map.find(id)?.color = MapState.palette[which] }
+            }
+            .setNegativeButton("キャンセル", null)
+            .show()
     }
 
     private fun showAutoLayoutDialog() {
