@@ -14,7 +14,8 @@ data class MindNode(
     var x: Float,
     var y: Float,
     var color: Int,
-    var collapsed: Boolean = false
+    var collapsed: Boolean = false,
+    var note: String = ""
 )
 
 class MapState(var title: String, val nodes: MutableList<MindNode>) {
@@ -77,7 +78,8 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
                 result.add(MindNode(
                     id, if (obj.isNull("parentId")) null else obj.getLong("parentId"),
                     obj.optString("title", "無題").take(300), x, y,
-                    obj.optInt("color", palette[0]), obj.optBoolean("collapsed", false)
+                    obj.optInt("color", palette[0]), obj.optBoolean("collapsed", false),
+                    obj.optString("note", "").take(20000)
                 ))
             }
             require(result.count { it.parentId == null } == 1) { "ルートは1個必要です" }
@@ -175,6 +177,7 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
                 put("y", n.y.toDouble())
                 put("color", n.color)
                 put("collapsed", n.collapsed)
+                put("note", n.note)
             })
         }
         return JSONObject().apply {
