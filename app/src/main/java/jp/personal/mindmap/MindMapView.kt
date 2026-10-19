@@ -222,7 +222,7 @@ class MindMapView(context: Context) : View(context) {
         invalidate()
     }
 
-    private fun cancelLongPress() {
+    private fun cancelScheduledLongPress() {
         longPressTask?.let { removeCallbacks(it) }
         longPressTask = null
     }
@@ -241,7 +241,7 @@ class MindMapView(context: Context) : View(context) {
                 pinchActive = false
                 longPressed = false
                 downSnapshot = null
-                cancelLongPress()
+                cancelScheduledLongPress()
                 val id = downNodeId
                 if (id != null) {
                     longPressTask = Runnable {
@@ -255,7 +255,7 @@ class MindMapView(context: Context) : View(context) {
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                cancelLongPress()
+                cancelScheduledLongPress()
                 if (event.pointerCount >= 2) {
                     if (draggedNodes && downSnapshot != null)
                         restorePositions(downSnapshot!!)
@@ -289,7 +289,7 @@ class MindMapView(context: Context) : View(context) {
                 val y = event.y
                 if (!moved && hypot(x - downX, y - downY) > touchSlop) {
                     moved = true
-                    cancelLongPress()
+                    cancelScheduledLongPress()
                 }
                 if (moved) {
                     val dx = x - lastX
@@ -332,7 +332,7 @@ class MindMapView(context: Context) : View(context) {
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                cancelLongPress()
+                cancelScheduledLongPress()
                 if (draggedNodes && downSnapshot != null) {
                     onMoveFinished(downSnapshot!!)
                 } else if (!moved && !pinchActive && !longPressed) {
@@ -358,7 +358,7 @@ class MindMapView(context: Context) : View(context) {
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
-                cancelLongPress()
+                cancelScheduledLongPress()
                 if (draggedNodes && downSnapshot != null)
                     restorePositions(downSnapshot!!)
                 draggedNodes = false
