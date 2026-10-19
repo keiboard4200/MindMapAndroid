@@ -372,96 +372,150 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun readLayoutSettings(): AutoLayout.Settings {
+        val prefs = getSharedPreferences("layout_settings", MODE_PRIVATE)
+        val style = runCatching {
+            AutoLayout.Style.valueOf(
+                prefs.getString("style", AutoLayout.Style.LEFT_TO_RIGHT.name)!!
+            )
+        }.getOrDefault(AutoLayout.Style.LEFT_TO_RIGHT)
+        val alignment = runCatching {
+            AutoLayout.Align.valueOf(
+                prefs.getString("alignment", AutoLayout.Align.CENTER.name)!!
+            )
+        }.getOrDefault(AutoLayout.Align.CENTER)
+        return AutoLayout.Settings(
+            selectedBranchOnly = prefs.getBoolean("selected_only", false),
+            spacing = prefs.getFloat("spacing", 220f).coerceIn(150f, 300f),
+            style = style,
+            alignment = alignment
+        )
+    }
+
+    private fun executeSavedLayout() {
+        val id = canvas.selectedId
+        if (savedLayout.selectedBranchOnly && id == null) {
+            toast("枝だけ整列する設定です。先にノードを選択してください")
+            return
+        }
+        var changed = 0
+        editTransaction {
+            changed = AutoLayout.apply(map, id, savedLayout)
+        }
+        if (changed == 0) {
+            toast("移動するノードがありません")
+        } else {
+            if (!savedLayout.selectedBranchOnly) canvas.fitAll()
+            toast("${changed}ノードを整列しました（Undo可能）")
+        }
+    }
+
     private fun showAutoLayoutDialog() {
         val selected = canvas.selectedId
-        val section = LinearLayout(this).apply {
+        val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(4), dp(20), dp(4))
+            setPadding(dp(20), dp(4), dp(20), dp(10))
         }
         fun heading(label: String) = TextView(this).apply {
             text = label
             textSize = 14f
-            setPadding(0, dp(12), 0, dp(4))
+            setPadding(0, dp(12), 0, dp(5))
         }
-        val scope = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val all = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "マップ全体"
-            isChecked = true
+        fun radio(group: RadioGroup, label: String): RadioButton =
+            RadioButton(this).apply {
+                id = View.generateViewId()
+                text = label
+                group.addView(this)
+            }
+
+        val styleGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val radial = radio(styleGroup, "放射状")
+        val leftRight = radio(styleGroup, "左→右のツリー")
+        styleGroup.check(if (savedLayout.style == AutoLayout.Style.RADIAL) radial.id else leftRight.id)
+        container.addView(heading("整列形式"))
+        container.addView(styleGroup)
+
+        val scopeGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val whole = radio(scopeGroup, "マップ全体")
+        val subtree = radio(scopeGroup, "選択ノードの枝のみ")
+        subtree.isEnabled = selected != null
+        scopeGroup.check(if (savedLayout.selectedBranchOnly && selected != null) subtree.id else whole.id)
+        container.addView(heading("整列する範囲"))
+        container.addView(scopeGroup)
+
+        val spacingGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val compact = radio(spacingGroup, "コンパクト（150）")
+        val regular = radio(spacingGroup, "標準（220）")
+        val wide = radio(spacingGroup, "広め（300）")
+        spacingGroup.check(when {
+            savedLayout.spacing <= 180f -> compact.id
+            savedLayout.spacing >= 260f -> wide.id
+            else -> regular.id
+        })
+        container.addView(heading("間隔"))
+        container.addView(spacingGroup)
+
+        val alignmentGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val top = radio(alignmentGroup, "上詰め")
+        val center = radio(alignmentGroup, "中央揃え")
+        val bottom = radio(alignmentGroup, "下詰め")
+        alignmentGroup.check(when (savedLayout.alignment) {
+            AutoLayout.Align.TOP -> top.id
+            AutoLayout.Align.CENTER -> center.id
+            AutoLayout.Align.BOTTOM -> bottom.id
+        })
+        fun syncAlignmentEnabled() {
+            val enabled = styleGroup.checkedRadioButtonId == leftRight.id
+            top.isEnabled = enabled
+            center.isEnabled = enabled
+            bottom.isEnabled = enabled
         }
-        val branch = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "選択ノードの枝のみ"
-            isEnabled = selected != null
-        }
-        scope.addView(all)
-        scope.addView(branch)
-        val layoutStyle = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val radialStyle = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "放射状（中心から全方向）"
-            isChecked = true
-        }
-        val rightTreeStyle = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "左→右（ルートを左に配置）"
-        }
-        layoutStyle.addView(radialStyle)
-        layoutStyle.addView(rightTreeStyle)
-        section.addView(heading("整列形式"))
-        section.addView(layoutStyle)
-        section.addView(heading("整列する範囲"))
-        section.addView(scope)
-        val spacing = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val compact = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "コンパクト（150）"
-        }
-        val normal = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "標準（220）"
-            isChecked = true
-        }
-        val wide = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "広め（300）"
-        }
-        spacing.addView(compact)
-        spacing.addView(normal)
-        spacing.addView(wide)
-        section.addView(heading("ノードの間隔"))
-        section.addView(spacing)
-        section.addView(TextView(this).apply {
-            text = "整列は「実行」したときだけ行います。左→右形式は親を左に、子を右に並べます。自由配置にはUndoで戻せます。"
+        styleGroup.setOnCheckedChangeListener { _, _ -> syncAlignmentEnabled() }
+        syncAlignmentEnabled()
+        container.addView(heading("枝の縦位置（左→右の整列時）"))
+        container.addView(alignmentGroup)
+
+        container.addView(TextView(this).apply {
+            text = "上詰め＝親を配下の先頭に、中央＝中間に、下詰め＝末尾に揃えます。保存してから画面上部の「整列」を押すと1回で実行できます。"
             textSize = 12f
             setPadding(0, dp(12), 0, dp(8))
         })
-        val scroller = android.widget.ScrollView(this).apply { addView(section) }
-        AlertDialog.Builder(this).setTitle("自動整列の設定")
-            .setView(scroller)
+        val scroll = android.widget.ScrollView(this).apply { addView(container) }
+        AlertDialog.Builder(this)
+            .setTitle("整列設定")
+            .setView(scroll)
             .setNegativeButton("キャンセル", null)
-            .setPositiveButton("整列を実行") { _, _ ->
-                val selectedOnly = scope.checkedRadioButtonId == branch.id
-                val gap = when (spacing.checkedRadioButtonId) {
-                    compact.id -> 150f
-                    wide.id -> 300f
-                    else -> 220f
+            .setPositiveButton("設定を保存") { _, _ ->
+                val style = if (styleGroup.checkedRadioButtonId == radial.id)
+                    AutoLayout.Style.RADIAL else AutoLayout.Style.LEFT_TO_RIGHT
+                val alignment = when (alignmentGroup.checkedRadioButtonId) {
+                    top.id -> AutoLayout.Align.TOP
+                    bottom.id -> AutoLayout.Align.BOTTOM
+                    else -> AutoLayout.Align.CENTER
                 }
-                var changed = 0
-                editTransaction {
-                    val style = if (layoutStyle.checkedRadioButtonId == rightTreeStyle.id)
-                        AutoLayout.Style.LEFT_TO_RIGHT else AutoLayout.Style.RADIAL
-                    changed = AutoLayout.apply(map, selected,
-                        AutoLayout.Settings(selectedOnly, gap, style))
-                }
-                if (!selectedOnly && changed > 0) canvas.fitAll()
-                toast(if (changed > 0) "${changed}ノードを整列しました" else "移動するノードがありません")
+                savedLayout = AutoLayout.Settings(
+                    selectedBranchOnly = scopeGroup.checkedRadioButtonId == subtree.id,
+                    spacing = when (spacingGroup.checkedRadioButtonId) {
+                        compact.id -> 150f
+                        wide.id -> 300f
+                        else -> 220f
+                    },
+                    style = style,
+                    alignment = alignment
+                )
+                getSharedPreferences("layout_settings", MODE_PRIVATE).edit()
+                    .putString("style", savedLayout.style.name)
+                    .putString("alignment", savedLayout.alignment.name)
+                    .putBoolean("selected_only", savedLayout.selectedBranchOnly)
+                    .putFloat("spacing", savedLayout.spacing)
+                    .apply()
+                toast("整列設定を保存しました")
             }.show()
     }
 
     private fun showAppMenu() {
         val options = arrayOf("新しいマップ", "100ノードのテストマップ",
-            "自動整列の設定", "JSONを書き出す", "JSONを読み込む", "全体にフィット", "操作方法")
+            "整列設定", "JSONを書き出す", "JSONを読み込む", "全体にフィット", "操作方法")
         AlertDialog.Builder(this).setTitle("マップ操作").setItems(options) { _, which ->
             when (which) {
                 0 -> confirmNewMap(MapState.blank())
@@ -493,7 +547,10 @@ class MainActivity : Activity() {
             "・空白をドラッグ：マップ移動\n" +
             "・2本指：拡大・縮小\n" +
             "・ノードを2回タップ：名前編集\n" +
-            "・ノード長押し：編集・色変更・折りたたみ・削除\n" +
+            "・ノード長押し：編集・ノート・色変更・折りたたみ・削除\n" +
+            "・上部「整列」：保存した設定で即座に整列\n" +
+            "・上部「設定」：整列設定を保存\n" +
+            "・下部「畳む／展開」：子ノードを非表示／表示\n" +
             "・全体：マップ全体を表示\n" +
             "・大切なデータはJSONでバックアップしてください"
         ).setPositiveButton("閉じる", null).show()
