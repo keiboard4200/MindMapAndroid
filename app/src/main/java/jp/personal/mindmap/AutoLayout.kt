@@ -12,11 +12,19 @@ import kotlin.math.sin
  * For a selected subtree, its root and all nodes outside that subtree stay fixed.
  */
 object AutoLayout {
-    data class Settings(val selectedBranchOnly: Boolean, val spacing: Float)
+    enum class Style { RADIAL, LEFT_TO_RIGHT }
+    data class Settings(
+        val selectedBranchOnly: Boolean,
+        val spacing: Float,
+        val style: Style = Style.RADIAL
+    )
 
     fun apply(map: MapState, selectedId: Long?, settings: Settings): Int {
         val center = if (settings.selectedBranchOnly) map.find(selectedId) ?: return 0
                      else map.root()
+        if (settings.style == Style.LEFT_TO_RIGHT) {
+            return applyLeftToRight(map, center, settings.spacing)
+        }
         val childrenByParent = map.nodes.groupBy { it.parentId }
         fun children(id: Long): List<MindNode> = childrenByParent[id].orEmpty()
 
@@ -81,4 +89,57 @@ object AutoLayout {
         place(center, 1, minAngle, maxAngle)
         return moved
     }
+    /**
+     * Tidy left-to-right tree with the root at the left and descendants to the right.
+     * Each leaf owns one vertical slot. Internal nodes sit midway between
+     * their outermost descendant leaves. No auto layout happens on edits or launch.
+     */
+    private fun applyLeftToRight(map: MapState, root: MindNode, spacing: Float): Int {
+        val byParent = map.nodes.groupBy { it.parentId }
+        val children = HashMap<Long, List<MindNode>>()
+        fun sortedChildren(node: MindNode): List<MindNode> =
+            children.getOrPut(node.id) {
+                byParent[node.id].orEmpty().sortedWith(
+                    compareBy<MindNode> { it.y }.thenBy { it.id }
+                )
+            }
+        if (sortedChildren(root).isEmpty()) return 0
+
+        val horizontalGap = max(205f, spacing.coerceIn(140f, 330f))
+        val verticalGap = max(74f, spacing * 0.4f)
+        val slot = HashMap<Long, Float>()
+        val depth = HashMap<Long, Int>()
+        var nextLeaf = 0f
+
+        fun allocate(n: MindNode, d: Int): Float {
+            depth[n.id] = d
+            val kids = sortedChildren(n)
+            val y = if (kids.isEmpty()) {
+                val value = nextLeaf
+                nextLeaf += 1f
+                value
+            } else {
+                val first = allocate(kids.first(), d + 1)
+                var last = first
+                for (child in kids.drop(1)) last = allocate(child, d + 1)
+                (first + last) / 2f
+            }
+            slot[n.id] = y
+            return y
+        }
+        allocate(root, 0)
+        val baseSlot = slot[root.id] ?: 0f
+        var changed = 0
+        for (node in map.nodes) {
+            val d = depth[node.id] ?: continue
+            if (d == 0) continue  // Selected branch root and other branches remain unchanged.
+            val x = root.x + d * horizontalGap
+            val y = root.y + ((slot[node.id] ?: baseSlot) - baseSlot) * verticalGap
+            if (node.x != x || node.y != y) changed++
+            node.x = x
+            node.y = y
+        }
+        return changed
+    }
+
 }
