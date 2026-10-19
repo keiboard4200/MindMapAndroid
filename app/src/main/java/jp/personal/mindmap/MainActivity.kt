@@ -220,8 +220,7 @@ class MainActivity : Activity() {
         inputDialog("新しいノード", "", "ノード名を入力") { name ->
             lateinit var added: MindNode
             editTransaction {
-                added = map.addChild(parentId)
-                added.title = name.take(300)
+                added = map.addChild(parentId, name.take(300))
             }
             canvas.select(added.id)
             canvas.focusOn(added.id)
