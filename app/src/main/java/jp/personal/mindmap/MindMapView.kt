@@ -228,8 +228,8 @@ class MindMapView(context: Context) : View(context) {
             }
 
             c.save()
-            c.translate(n.x - m.title.width / 2f, n.y - m.title.height / 2f)
-            m.title.draw(c)
+            c.translate(n.x - m.titleLayout.width / 2f, n.y - m.titleLayout.height / 2f)
+            m.titleLayout.draw(c)
             c.restore()
 
             // Left button: comment visibility. Right button: children visibility.
