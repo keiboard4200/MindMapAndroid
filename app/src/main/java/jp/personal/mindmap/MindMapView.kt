@@ -6,6 +6,9 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -21,6 +24,7 @@ class MindMapView(context: Context) : View(context) {
         set(value) {
             field = value
             selectedId = null
+            metricsCache.clear()
             invalidate()
         }
     var selectedId: Long? = null
@@ -29,12 +33,27 @@ class MindMapView(context: Context) : View(context) {
     var onSelectionChanged: (Long?) -> Unit = {}
     var onEditRequested: (Long) -> Unit = {}
     var onDoubleTap: (Long) -> Unit = {}
+    var onFoldClicked: (Long) -> Unit = {}
+    var onCommentClicked: (Long) -> Unit = {}
     var onMoveFinished: (String) -> Unit = {}
 
     private val densityScale = resources.displayMetrics.density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
+    private val titleTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 14f
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+    }
+    private val commentTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(209, 222, 236)
+        textSize = 12f
+    }
+    private data class NodeMetrics(val width: Float, val height: Float, val title: StaticLayout)
+    private val metricsCache = mutableMapOf<Long, Pair<String, NodeMetrics>>()
+    private enum class HitControl { COMMENT, FOLD }
+    private var downControl: HitControl? = null
     private var zoom = 0.82f
     private var originX = 0f
     private var originY = 0f
@@ -110,21 +129,56 @@ class MindMapView(context: Context) : View(context) {
     private fun worldX(screenX: Float) = (screenX - originX) / (zoom * densityScale)
     private fun worldY(screenY: Float) = (screenY - originY) / (zoom * densityScale)
 
-    private fun nodeWidth(n: MindNode): Float {
-        paint.textSize = 14f
-        paint.typeface = android.graphics.Typeface.DEFAULT_BOLD
-        return (paint.measureText(n.title) + 31f).coerceIn(80f, 172f)
+    private fun buildLayout(text: String, p: TextPaint, width: Int): StaticLayout =
+        StaticLayout.Builder.obtain(text, 0, text.length, p, width.coerceAtLeast(24))
+            .setAlignment(Layout.Alignment.ALIGN_CENTER)
+            .setIncludePad(false)
+            .build()
+
+    private fun metrics(node: MindNode): NodeMetrics {
+        val cached = metricsCache[node.id]
+        if (cached != null && cached.first == node.title) return cached.second
+        val longest = node.title.split('\n').maxOfOrNull { titleTextPaint.measureText(it) } ?: 0f
+        val width = (longest + 70f).coerceIn(116f, 318f)
+        val title = buildLayout(node.title, titleTextPaint, (width - 68f).toInt())
+        val result = NodeMetrics(width, max(44f, title.height + 20f), title)
+        metricsCache[node.id] = node.title to result
+        return result
+    }
+
+    private fun commentLayout(node: MindNode): StaticLayout {
+        val lines = node.note.split('\n')
+        val longest = lines.maxOfOrNull { commentTextPaint.measureText(it) } ?: 0f
+        val width = (longest + 8f).coerceIn(110f, 310f).toInt()
+        return buildLayout(node.note, commentTextPaint, width)
+    }
+
+    private fun inBody(n: MindNode, wx: Float, wy: Float): Boolean {
+        val m = metrics(n)
+        return wx >= n.x - m.width / 2f - 5f &&
+            wx <= n.x + m.width / 2f + 5f &&
+            wy >= n.y - m.height / 2f - 5f &&
+            wy <= n.y + m.height / 2f + 5f
     }
 
     private fun hitNode(sx: Float, sy: Float): MindNode? {
         val x = worldX(sx)
         val y = worldY(sy)
-        for (n in map.visibleNodes(zoom).asReversed()) {
-            val w = nodeWidth(n)
-            if (x in (n.x - w / 2f - 7f)..(n.x + w / 2f + 7f) &&
-                y in (n.y - 25f)..(n.y + 25f)) return n
+        return map.visibleNodes(zoom).asReversed().firstOrNull { inBody(it, x, y) }
+    }
+
+    private fun hitControl(n: MindNode, screenX: Float, screenY: Float): HitControl? {
+        if (zoom < 0.45f) return null
+        val m = metrics(n)
+        val x = worldX(screenX)
+        val y = worldY(screenY)
+        if (abs(y - n.y) > max(22f, m.height / 2f)) return null
+        return when {
+            abs(x - (n.x - m.width / 2f + 14f)) < 15f -> HitControl.COMMENT
+            map.children(n.id).isNotEmpty() &&
+                abs(x - (n.x + m.width / 2f - 14f)) < 15f -> HitControl.FOLD
+            else -> null
         }
-        return null
     }
 
     override fun onDraw(c: Canvas) {
@@ -138,83 +192,91 @@ class MindMapView(context: Context) : View(context) {
         c.scale(zoom * densityScale, zoom * densityScale)
 
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2.1f
+        paint.strokeWidth = 2.0f
+        paint.color = Color.rgb(106, 125, 149)
         for (node in visible) {
-            val p = map.find(node.parentId) ?: continue
-            if (p.id !in ids) continue
-            val dir = if (node.x < p.x) -1f else 1f
-            val ax = p.x + dir * nodeWidth(p) / 2f
-            val bx = node.x - dir * nodeWidth(node) / 2f
+            val parentNode = map.find(node.parentId) ?: continue
+            if (parentNode.id !in ids) continue
+            val from = metrics(parentNode)
+            val to = metrics(node)
+            val dir = if (node.x < parentNode.x) -1f else 1f
+            val ax = parentNode.x + dir * from.width / 2f
+            val bx = node.x - dir * to.width / 2f
+            val bend = max(18f, abs(bx - ax) * 0.42f)
             val path = Path().apply {
-                moveTo(ax, p.y)
-                val d = max(18f, abs(bx - ax) * 0.42f)
-                cubicTo(ax + dir * d, p.y, bx - dir * d, node.y, bx, node.y)
+                moveTo(ax, parentNode.y)
+                cubicTo(ax + dir * bend, parentNode.y, bx - dir * bend, node.y, bx, node.y)
             }
-            // Connection colors are independent of each node's fill color.
-            paint.color = Color.rgb(106, 125, 149)
-            paint.alpha = 195
             c.drawPath(path, paint)
         }
 
-        for (node in visible) {
-            val w = nodeWidth(node)
-            rect.set(node.x - w / 2f, node.y - 21f, node.x + w / 2f, node.y + 21f)
+        for (n in visible) {
+            val m = metrics(n)
+            val left = n.x - m.width / 2f
+            val top = n.y - m.height / 2f
+            rect.set(left, top, left + m.width, top + m.height)
             paint.style = Paint.Style.FILL
-            paint.color = node.color
-            paint.alpha = 255
+            paint.color = n.color
             c.drawRoundRect(rect, 10f, 10f, paint)
-            if (selectedId == node.id) {
+            if (selectedId == n.id) {
                 paint.style = Paint.Style.STROKE
-                paint.strokeWidth = 3.2f
-                paint.color = Color.rgb(230, 241, 253)
-                rect.inset(-3f, -3f)
-                c.drawRoundRect(rect, 12f, 12f, paint)
-                rect.inset(3f, 3f)
+                paint.strokeWidth = 2.8f
+                paint.color = Color.rgb(231, 242, 253)
+                rect.inset(-2f, -2f)
+                c.drawRoundRect(rect, 11f, 11f, paint)
+                rect.inset(2f, 2f)
             }
+
+            c.save()
+            c.translate(n.x - m.title.width / 2f, n.y - m.title.height / 2f)
+            m.title.draw(c)
+            c.restore()
+
+            // Left button: comment visibility. Right button: children visibility.
             paint.style = Paint.Style.FILL
-            paint.color = Color.WHITE
-            paint.textSize = 14f
-            paint.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-            val label = ellipsize(node.title, w - 20f)
-            c.drawText(label, node.x - paint.measureText(label) / 2f, node.y + 5f, paint)
-
-            // A small marker indicates attached notes without showing their full text.
-            if (node.note.isNotBlank()) {
-                paint.color = Color.rgb(249, 232, 164)
-                paint.style = Paint.Style.FILL
-                c.drawCircle(node.x + w / 2f - 7f, node.y - 17f, 4.5f, paint)
-            }
-
-            val hidden = map.hiddenCount(node.id, ids)
-            if (hidden > 0) {
-                val badgeLabel = if (node.collapsed) "+$hidden" else "$hidden"
-                paint.textSize = 11f
-                val badgeW = max(26f, paint.measureText(badgeLabel) + 10f)
-                paint.color = Color.rgb(33, 48, 68)
-                rect.set(node.x + w / 2f - badgeW / 2f, node.y + 16f,
-                    node.x + w / 2f + badgeW / 2f, node.y + 34f)
-                c.drawRoundRect(rect, 9f, 9f, paint)
+            paint.color = Color.rgb(25, 36, 52)
+            val lx = left + 14f
+            val rx = left + m.width - 14f
+            c.drawCircle(lx, n.y, 10f, paint)
+            paint.color = if (n.note.isNotEmpty()) Color.rgb(248, 223, 150)
+                else Color.rgb(154, 174, 195)
+            paint.textAlign = Paint.Align.CENTER
+            paint.textSize = 12f
+            c.drawText(if (n.commentVisible) "≡" else "×", lx, n.y + 4f, paint)
+            if (map.children(n.id).isNotEmpty()) {
+                paint.color = Color.rgb(25, 36, 52)
+                c.drawCircle(rx, n.y, 10f, paint)
                 paint.color = Color.WHITE
-                c.drawText(badgeLabel, rect.centerX() - paint.measureText(badgeLabel) / 2f,
-                    rect.centerY() + 4f, paint)
+                paint.textSize = 16f
+                c.drawText(if (n.collapsed) "+" else "−", rx, n.y + 5.5f, paint)
+            }
+            paint.textAlign = Paint.Align.LEFT
+
+            if (n.note.isNotBlank() && n.commentVisible) {
+                val comment = commentLayout(n)
+                c.save()
+                c.translate(n.x - comment.width / 2f, top + m.height + 7f)
+                comment.draw(c)
+                c.restore()
+            }
+            if (n.collapsed) {
+                val hidden = map.descendants(n.id).size
+                if (hidden > 0) {
+                    paint.color = Color.rgb(178, 202, 226)
+                    paint.textAlign = Paint.Align.CENTER
+                    paint.textSize = 11f
+                    c.drawText("+" + hidden, rx, top - 5f, paint)
+                    paint.textAlign = Paint.Align.LEFT
+                }
             }
         }
         c.restore()
         paint.style = Paint.Style.FILL
         paint.color = Color.rgb(194, 207, 227)
         paint.textSize = 12f * densityScale
-        c.drawText("${(zoom * 100).toInt()}% · ${visible.size}/${map.nodes.size}ノード",
+        c.drawText((zoom * 100).toInt().toString() + "% · " +
+            visible.size + "/" + map.nodes.size + "ノード",
             12f * densityScale, 21f * densityScale, paint)
-    }
-
-    private fun ellipsize(source: String, maxWidth: Float): String {
-        val clean = source.replace('\n', ' ')
-        if (paint.measureText(clean) <= maxWidth) return clean
-        val suffix = "…"
-        var text = clean
-        while (text.isNotEmpty() && paint.measureText(text + suffix) > maxWidth)
-            text = text.dropLast(1)
-        return text + suffix
     }
 
     private fun distance(e: MotionEvent): Float =
@@ -247,6 +309,7 @@ class MindMapView(context: Context) : View(context) {
                 lastX = event.x
                 lastY = event.y
                 downNodeId = hitNode(event.x, event.y)?.id
+                downControl = map.find(downNodeId)?.let { hitControl(it, event.x, event.y) }
                 moved = false
                 draggedNodes = false
                 pinchActive = false
@@ -254,7 +317,7 @@ class MindMapView(context: Context) : View(context) {
                 downSnapshot = null
                 cancelScheduledLongPress()
                 val id = downNodeId
-                if (id != null) {
+                if (id != null && downControl == null) {
                     longPressTask = Runnable {
                         if (!moved && !pinchActive) {
                             longPressed = true
@@ -305,6 +368,11 @@ class MindMapView(context: Context) : View(context) {
                 if (moved) {
                     val dx = x - lastX
                     val dy = y - lastY
+                    if (downControl != null) {
+                        lastX = x
+                        lastY = y
+                        return true
+                    }
                     if (downNodeId != null) {
                         if (!draggedNodes) {
                             downSnapshot = map.asJson()
@@ -313,7 +381,8 @@ class MindMapView(context: Context) : View(context) {
                         }
                         val target = map.find(downNodeId)
                         if (target != null) {
-                            val moving = if (groupDrag) listOf(target) + map.descendants(target.id)
+                            val moving = if (groupDrag || target.collapsed)
+                                listOf(target) + map.descendants(target.id)
                                 else listOf(target)
                             val worldDx = dx / (zoom * densityScale)
                             val worldDy = dy / (zoom * densityScale)
@@ -348,7 +417,15 @@ class MindMapView(context: Context) : View(context) {
                     onMoveFinished(downSnapshot!!)
                 } else if (!moved && !pinchActive && !longPressed) {
                     val tappedId = downNodeId
-                    if (tappedId != null) {
+                    if (tappedId != null && downControl != null) {
+                        select(tappedId)
+                        when (downControl) {
+                            HitControl.COMMENT -> onCommentClicked(tappedId)
+                            HitControl.FOLD -> onFoldClicked(tappedId)
+                            null -> {}
+                        }
+                        previousTapId = null
+                    } else if (tappedId != null) {
                         val now = SystemClock.uptimeMillis()
                         if (previousTapId == tappedId && now - previousTapTime < 330L) {
                             select(tappedId)
@@ -366,6 +443,7 @@ class MindMapView(context: Context) : View(context) {
                 }
                 draggedNodes = false
                 downSnapshot = null
+                downControl = null
                 performClick()
                 return true
             }
@@ -376,6 +454,7 @@ class MindMapView(context: Context) : View(context) {
                 draggedNodes = false
                 downSnapshot = null
                 pinchActive = false
+                downControl = null
                 return true
             }
         }
