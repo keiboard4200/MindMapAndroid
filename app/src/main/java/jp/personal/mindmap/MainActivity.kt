@@ -453,11 +453,17 @@ class MainActivity : Activity() {
                 prefs.getString("alignment", AutoLayout.Align.CENTER.name)!!
             )
         }.getOrDefault(AutoLayout.Align.CENTER)
+        val horizontal = runCatching {
+            AutoLayout.Horizontal.valueOf(
+                prefs.getString("horizontal", AutoLayout.Horizontal.CENTER.name)!!
+            )
+        }.getOrDefault(AutoLayout.Horizontal.CENTER)
         return AutoLayout.Settings(
             selectedBranchOnly = prefs.getBoolean("selected_only", false),
             spacing = prefs.getFloat("spacing", 220f).coerceIn(150f, 300f),
             style = style,
-            alignment = alignment
+            alignment = alignment,
+            horizontal = horizontal
         )
     }
 
@@ -544,8 +550,33 @@ class MainActivity : Activity() {
         container.addView(heading("枝の縦位置（左→右の整列時）"))
         container.addView(alignmentGroup)
 
+        val horizontalGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val alignLeft = radio(horizontalGroup, "左詰め（ノード左端を揃える）")
+        val alignCenter = radio(horizontalGroup, "中央揃え（ノード中心を揃える）")
+        val alignRight = radio(horizontalGroup, "右詰め（ノード右端を揃える）")
+        horizontalGroup.check(when (savedLayout.horizontal) {
+            AutoLayout.Horizontal.LEFT -> alignLeft.id
+            AutoLayout.Horizontal.CENTER -> alignCenter.id
+            AutoLayout.Horizontal.RIGHT -> alignRight.id
+        })
+        container.addView(heading("階層内の横揃え（左→右の整列時）"))
+        container.addView(horizontalGroup)
+
+        fun syncHorizontalEnabled() {
+            val enabled = styleGroup.checkedRadioButtonId == leftRight.id
+            alignLeft.isEnabled = enabled
+            alignCenter.isEnabled = enabled
+            alignRight.isEnabled = enabled
+        }
+        // Both alignment groups only apply to the left-to-right tree style.
+        styleGroup.setOnCheckedChangeListener { _, _ ->
+            syncAlignmentEnabled()
+            syncHorizontalEnabled()
+        }
+        syncHorizontalEnabled()
+
         container.addView(TextView(this).apply {
-            text = "上詰め＝親を配下の先頭に、中央＝中間に、下詰め＝末尾に揃えます。保存してから画面上部の「整列」を押すと1回で実行できます。"
+            text = "左詰め／中央揃え／右詰めは各階層のノード幅が違う場合の基準位置です。コメントを表示しているノードは、その全文の幅と高さを含めて間隔を確保します。非表示コメントは間隔に含めません。保存後は上部「整列」で即実行します。"
             textSize = 12f
             setPadding(0, dp(12), 0, dp(8))
         })
@@ -562,6 +593,11 @@ class MainActivity : Activity() {
                     bottom.id -> AutoLayout.Align.BOTTOM
                     else -> AutoLayout.Align.CENTER
                 }
+                val horizontal = when (horizontalGroup.checkedRadioButtonId) {
+                    alignLeft.id -> AutoLayout.Horizontal.LEFT
+                    alignRight.id -> AutoLayout.Horizontal.RIGHT
+                    else -> AutoLayout.Horizontal.CENTER
+                }
                 savedLayout = AutoLayout.Settings(
                     selectedBranchOnly = scopeGroup.checkedRadioButtonId == subtree.id,
                     spacing = when (spacingGroup.checkedRadioButtonId) {
@@ -570,11 +606,13 @@ class MainActivity : Activity() {
                         else -> 220f
                     },
                     style = style,
-                    alignment = alignment
+                    alignment = alignment,
+                    horizontal = horizontal
                 )
                 getSharedPreferences("layout_settings", MODE_PRIVATE).edit()
                     .putString("style", savedLayout.style.name)
                     .putString("alignment", savedLayout.alignment.name)
+                    .putString("horizontal", savedLayout.horizontal.name)
                     .putBoolean("selected_only", savedLayout.selectedBranchOnly)
                     .putFloat("spacing", savedLayout.spacing)
                     .apply()
