@@ -26,7 +26,6 @@ class MainActivity : Activity() {
     private lateinit var canvas: MindMapView
     private lateinit var titleView: TextView
     private lateinit var modeButton: Button
-    private lateinit var foldButton: Button
     private var savedLayout = AutoLayout.Settings(
         selectedBranchOnly = false,
         spacing = 220f,
@@ -115,14 +114,24 @@ class MainActivity : Activity() {
             branchMode = false
             canvas.groupDrag = false
             modeButton.text = "単独"
-            updateFoldButton()
             titleView.text = if (id != null) {
                 val node = map.find(id)
                 "${node?.title ?: ""} · ${map.descendants(id).size}件"
             } else map.title
         }
         canvas.onEditRequested = { id -> showNodeMenu(id) }
-        canvas.onDoubleTap = { id -> renameNode(id) }
+        canvas.onDoubleTap = { id -> editNodeDetails(id) }
+        canvas.onFoldClicked = { id ->
+            val node = map.find(id)
+            if (node != null && map.children(id).isNotEmpty()) {
+                editTransaction { node.collapsed = !node.collapsed }
+            }
+        }
+        canvas.onCommentClicked = { id ->
+            map.find(id)?.let { node ->
+                editTransaction { node.commentVisible = !node.commentVisible }
+            }
+        }
         canvas.onMoveFinished = { previous ->
             if (previous != map.asJson()) {
                 pushUndo(previous)
@@ -148,14 +157,13 @@ class MainActivity : Activity() {
             canvas.selectedId?.let { colorMenu(it) }
                 ?: toast("色を変えるノードを選択してください")
         }
-        addBottom("ノート") {
+        addBottom("コメント") {
             canvas.selectedId?.let { editNote(it) }
-                ?: toast("ノートを書くノードを選択してください")
+                ?: toast("コメントを書くノードを選択してください")
         }
-        foldButton = addBottom("畳む") { toggleFoldSelected() }
+        addBottom("削除") { deleteSelected() }
         addBottom("↶") { undo() }
         addBottom("↷") { redo() }
-        updateFoldButton()
         main.addView(bottom)
     }
 
@@ -208,7 +216,6 @@ class MainActivity : Activity() {
         branchMode = false
         canvas.groupDrag = false
         modeButton.text = "単独"
-        updateFoldButton()
         if (!preserveViewport) canvas.post { canvas.fitAll() }
         save()
     }
@@ -238,7 +245,7 @@ class MainActivity : Activity() {
         inputDialog("新しいノード", "", "ノード名を入力") { name ->
             lateinit var added: MindNode
             editTransaction {
-                added = map.addChild(parentId, name.take(300))
+                added = map.addChild(parentId, name.take(300), savedLayout)
             }
             canvas.select(added.id)
             canvas.focusOn(added.id)
@@ -291,7 +298,7 @@ class MainActivity : Activity() {
         val node = map.find(id) ?: return
         val editor = EditText(this).apply {
             setText(node.note)
-            hint = "このノードに関するメモを入力"
+            hint = "コメントを入力"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
@@ -302,7 +309,7 @@ class MainActivity : Activity() {
             setSelection(text.length)
         }
         AlertDialog.Builder(this)
-            .setTitle("ノート：${node.title}")
+            .setTitle("コメント：${node.title}")
             .setView(editor)
             .setNegativeButton("キャンセル", null)
             .setPositiveButton("保存") { _, _ ->
@@ -310,47 +317,109 @@ class MainActivity : Activity() {
             }.show()
     }
 
-    private fun toggleFoldSelected() {
-        val id = canvas.selectedId ?: run {
-            toast("折りたたむノードを選択してください")
-            return
-        }
+    private fun editNodeDetails(id: Long) {
         val node = map.find(id) ?: return
-        if (map.children(id).isEmpty()) {
-            toast("子ノードがありません")
-            return
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(6), dp(18), dp(8))
         }
-        editTransaction { node.collapsed = !node.collapsed }
-        updateFoldButton()
+        val titleLabel = TextView(this).apply { text = "タイトル" }
+        val titleInput = EditText(this).apply {
+            setText(node.title)
+            setSelection(text.length)
+            maxLines = 5
+        }
+        val noteLabel = TextView(this).apply {
+            text = "コメント（ノードの下に表示）"
+            setPadding(0, dp(14), 0, 0)
+        }
+        val noteInput = EditText(this).apply {
+            setText(node.note)
+            hint = "コメントを入力"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 4
+            maxLines = 10
+            gravity = Gravity.TOP or Gravity.START
+        }
+        form.addView(titleLabel)
+        form.addView(titleInput)
+        form.addView(noteLabel)
+        form.addView(noteInput)
+        val scroll = android.widget.ScrollView(this).apply { addView(form) }
+        AlertDialog.Builder(this).setTitle("ノードを編集").setView(scroll)
+            .setNegativeButton("キャンセル", null)
+            .setPositiveButton("保存") { _, _ ->
+                val newTitle = titleInput.text.toString().trim()
+                if (newTitle.isBlank()) {
+                    toast("タイトルは空欄にできません")
+                } else {
+                    editTransaction {
+                        node.title = newTitle.take(300)
+                        node.note = noteInput.text.toString().take(20000)
+                        node.commentVisible = true
+                    }
+                }
+            }.show()
     }
 
-    private fun updateFoldButton() {
-        if (!::foldButton.isInitialized) return
-        val n = map.find(canvas.selectedId)
-        foldButton.isEnabled = n != null && map.children(n.id).isNotEmpty()
-        foldButton.text = if (n?.collapsed == true) "展開" else "畳む"
+    private fun deleteSelected() {
+        val id = canvas.selectedId ?: run {
+            toast("削除するノードを選択してください")
+            return
+        }
+        confirmDelete(id)
+    }
+
+    private fun confirmDelete(id: Long) {
+        val node = map.find(id) ?: return
+        if (node.parentId == null) {
+            toast("ルートノードは削除できません")
+            return
+        }
+        val descendants = map.descendants(id).size
+        val options = arrayOf(
+            "このノードだけ削除（子は親に付け替え）",
+            "この枝を削除（子孫" + descendants + "件も削除）"
+        )
+        AlertDialog.Builder(this).setTitle("削除方法： " + node.title)
+            .setItems(options) { _, choice ->
+                val message = if (choice == 0) "このノードだけを削除し、子ノードは上位の親に接続しますか？"
+                    else "このノードと配下" + descendants + "件を完全に削除しますか？"
+                AlertDialog.Builder(this).setMessage(message)
+                    .setNegativeButton("キャンセル", null)
+                    .setPositiveButton("削除") { _, _ ->
+                        editTransaction {
+                            if (choice == 0) map.deleteNodeOnly(id) else map.deleteBranch(id)
+                        }
+                        canvas.select(null)
+                    }.show()
+            }
+            .setNegativeButton("キャンセル", null).show()
     }
 
     private fun showNodeMenu(id: Long) {
         val node = map.find(id) ?: return
-        val names = arrayOf("名前を編集", "子ノードを追加", "色を変更", "ノートを編集",
-            if (node.collapsed) "展開" else "子ノードを折りたたむ", "このノードを中心に表示", "この枝を削除")
+        val names = arrayOf(
+            "タイトルとコメントを編集",
+            "子ノードを追加",
+            "色を変更",
+            "コメントを編集",
+            if (node.collapsed) "子ノードを展開" else "子ノードを折りたたむ",
+            "ノードを中心に表示",
+            "削除"
+        )
         AlertDialog.Builder(this).setTitle(node.title).setItems(names) { _, which ->
             when (which) {
-                0 -> renameNode(id)
+                0 -> editNodeDetails(id)
                 1 -> { canvas.select(id); addChild() }
                 2 -> colorMenu(id)
                 3 -> editNote(id)
-                4 -> { editTransaction { node.collapsed = !node.collapsed }; updateFoldButton() }
+                4 -> if (map.children(id).isNotEmpty()) editTransaction {
+                    node.collapsed = !node.collapsed
+                } else toast("子ノードがありません")
                 5 -> canvas.focusOn(id)
-                6 -> if (id == map.root().id) toast("中心ノードは削除できません") else
-                    AlertDialog.Builder(this)
-                        .setMessage("選択したノードと子孫をすべて削除しますか？")
-                        .setNegativeButton("キャンセル", null)
-                        .setPositiveButton("削除") { _, _ ->
-                            editTransaction { map.deleteBranch(id) }
-                            canvas.select(null)
-                        }.show()
+                6 -> confirmDelete(id)
             }
         }.show()
     }
@@ -546,8 +615,9 @@ class MainActivity : Activity() {
             "・ノードをドラッグ：単独または枝ごと移動\n" +
             "・空白をドラッグ：マップ移動\n" +
             "・2本指：拡大・縮小\n" +
-            "・ノードを2回タップ：名前編集\n" +
-            "・ノード長押し：編集・ノート・色変更・折りたたみ・削除\n" +
+            "・ノードを2回タップ：タイトル＋コメント編集\n" +
+            "・左右のボタン：コメント表示／折りたたみ切り替え\n" +
+            "・ノード長押し：編集・色変更・削除\n" +
             "・上部「整列」：保存した設定で即座に整列\n" +
             "・上部「設定」：整列設定を保存\n" +
             "・下部「畳む／展開」：子ノードを非表示／表示\n" +
