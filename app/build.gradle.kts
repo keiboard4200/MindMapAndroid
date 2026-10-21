@@ -8,11 +8,11 @@ android {
     namespace = "jp.personal.mindmap"
     compileSdk = 35
     defaultConfig {
-        applicationId = "jp.personal.mindmap.preview.v04"
+        applicationId = "jp.personal.mindmap.preview.v05"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
