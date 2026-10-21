@@ -15,7 +15,8 @@ data class MindNode(
     var y: Float,
     var color: Int,
     var collapsed: Boolean = false,
-    var note: String = ""
+    var note: String = "",
+    var commentVisible: Boolean = true
 )
 
 class MapState(var title: String, val nodes: MutableList<MindNode>) {
@@ -79,7 +80,8 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
                     id, if (obj.isNull("parentId")) null else obj.getLong("parentId"),
                     obj.optString("title", "無題").take(300), x, y,
                     obj.optInt("color", palette[0]), obj.optBoolean("collapsed", false),
-                    obj.optString("note", "").take(20000)
+                    obj.optString("note", "").take(20000),
+                    obj.optBoolean("commentVisible", true)
                 ))
             }
             require(result.count { it.parentId == null } == 1) { "ルートは1個必要です" }
@@ -145,19 +147,62 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
     fun hiddenCount(id: Long, visibleIds: Set<Long>) =
         descendants(id).count { it.id !in visibleIds }
 
-    fun addChild(parentId: Long, title: String): MindNode {
+    /**
+     * Insert into the current layout style without moving existing nodes.
+     * This is intentionally different from re-running automatic alignment.
+     */
+    fun addChild(parentId: Long, title: String, settings: AutoLayout.Settings): MindNode {
         val p = find(parentId) ?: root()
-        val siblings = children(p.id).size
-        val angle = if (p.parentId == null) siblings * 2.0 * PI / 6.0
-                    else kotlin.math.atan2(p.y.toDouble(), p.x.toDouble()) + (siblings - 1.5) * 0.3
-        val radius = if (p.parentId == null) 210.0 else 150.0
-        val node = MindNode((nodes.maxOfOrNull { it.id } ?: 0L) + 1L, p.id,
-            title,
-            p.x + (radius * cos(angle)).toFloat(),
-            p.y + (radius * sin(angle)).toFloat(), p.color)
+        val siblings = children(p.id)
+        val gap = settings.spacing.coerceIn(150f, 300f)
+        val x: Float
+        val y: Float
+        if (settings.style == AutoLayout.Style.LEFT_TO_RIGHT) {
+            val stepX = kotlin.math.max(205f, gap)
+            val stepY = kotlin.math.max(74f, gap * 0.4f)
+            x = p.x + stepX
+            y = when (settings.alignment) {
+                AutoLayout.Align.TOP ->
+                    if (siblings.isEmpty()) p.y else siblings.maxOf { it.y } + stepY
+                AutoLayout.Align.BOTTOM ->
+                    if (siblings.isEmpty()) p.y else siblings.minOf { it.y } - stepY
+                AutoLayout.Align.CENTER -> when {
+                    siblings.isEmpty() -> p.y
+                    siblings.size % 2 == 1 -> p.y + ((siblings.size + 1) / 2) * stepY
+                    else -> p.y - (siblings.size / 2) * stepY
+                }
+            }
+        } else {
+            val parent = find(p.parentId)
+            val direction = if (parent == null) 0.0
+                else kotlin.math.atan2((p.y - parent.y).toDouble(), (p.x - parent.x).toDouble())
+            val idx = siblings.size
+            val theta = if (parent == null) {
+                idx * (2.0 * PI / 6.0)
+            } else {
+                val offset = when {
+                    idx == 0 -> 0.0
+                    idx % 2 == 1 -> (idx + 1) / 2.0 * 0.4
+                    else -> -idx / 2.0 * 0.4
+                }
+                direction + offset
+            }
+            x = p.x + (gap * cos(theta)).toFloat()
+            y = p.y + (gap * sin(theta)).toFloat()
+        }
+        val node = MindNode((nodes.maxOfOrNull { it.id } ?: 0L) + 1L,
+            p.id, title, x, y, p.color)
         nodes.add(node)
         p.collapsed = false
         return node
+    }
+
+    /** Delete just one node, reparenting immediate children without moving them. */
+    fun deleteNodeOnly(id: Long) {
+        val target = find(id) ?: return
+        val parent = target.parentId ?: return
+        for (child in children(id)) child.parentId = parent
+        nodes.removeAll { it.id == id }
     }
 
     fun deleteBranch(id: Long) {
@@ -178,6 +223,7 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
                 put("color", n.color)
                 put("collapsed", n.collapsed)
                 put("note", n.note)
+                put("commentVisible", n.commentVisible)
             })
         }
         return JSONObject().apply {
