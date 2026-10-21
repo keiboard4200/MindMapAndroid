@@ -41,17 +41,11 @@ class MindMapView(context: Context) : View(context) {
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
-    private val titleTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        textSize = 14f
-        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-    }
-    private val commentTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(209, 222, 236)
-        textSize = 12f
-    }
-    private data class NodeMetrics(val width: Float, val height: Float, val title: StaticLayout)
-    private val metricsCache = mutableMapOf<Long, Pair<String, NodeMetrics>>()
+    private data class CachedBox(
+        val title: String, val note: String, val visible: Boolean,
+        val geometry: NodeGeometry.Box
+    )
+    private val metricsCache = mutableMapOf<Long, CachedBox>()
     private enum class HitControl { COMMENT, FOLD }
     private var downControl: HitControl? = null
     private var zoom = 0.82f
@@ -116,9 +110,9 @@ class MindMapView(context: Context) : View(context) {
             minY = min(minY, node.y - m.height / 2f)
             var bottom = node.y + m.height / 2f
             if (node.note.isNotBlank() && node.commentVisible) {
-                val comment = commentLayout(node)
-                halfWidth = max(halfWidth, comment.width / 2f)
-                bottom += 7f + comment.height
+                val comment = m.commentLayout
+                halfWidth = max(halfWidth, (comment?.width ?: 0) / 2f)
+                bottom += 7f + (comment?.height ?: 0)
             }
             minX = min(minX, node.x - halfWidth)
             maxX = max(maxX, node.x + halfWidth)
@@ -146,28 +140,17 @@ class MindMapView(context: Context) : View(context) {
     private fun worldX(screenX: Float) = (screenX - originX) / (zoom * densityScale)
     private fun worldY(screenY: Float) = (screenY - originY) / (zoom * densityScale)
 
-    private fun buildLayout(text: String, p: TextPaint, width: Int): StaticLayout =
-        StaticLayout.Builder.obtain(text, 0, text.length, p, width.coerceAtLeast(24))
-            .setAlignment(Layout.Alignment.ALIGN_CENTER)
-            .setIncludePad(false)
-            .build()
-
-    private fun metrics(node: MindNode): NodeMetrics {
+    private fun metrics(node: MindNode): NodeGeometry.Box {
         val cached = metricsCache[node.id]
-        if (cached != null && cached.first == node.title) return cached.second
-        val longest = node.title.split('\n').maxOfOrNull { titleTextPaint.measureText(it) } ?: 0f
-        val width = (longest + 70f).coerceIn(116f, 318f)
-        val title = buildLayout(node.title, titleTextPaint, (width - 68f).toInt())
-        val result = NodeMetrics(width, max(44f, title.height + 20f), title)
-        metricsCache[node.id] = node.title to result
-        return result
-    }
-
-    private fun commentLayout(node: MindNode): StaticLayout {
-        val lines = node.note.split('\n')
-        val longest = lines.maxOfOrNull { commentTextPaint.measureText(it) } ?: 0f
-        val width = (longest + 8f).coerceIn(110f, 310f).toInt()
-        return buildLayout(node.note, commentTextPaint, width)
+        if (cached != null && cached.title == node.title &&
+            cached.note == node.note && cached.visible == node.commentVisible) {
+            return cached.geometry
+        }
+        val box = NodeGeometry.measure(node)
+        metricsCache[node.id] = CachedBox(
+            node.title, node.note, node.commentVisible, box
+        )
+        return box
     }
 
     private fun inBody(n: MindNode, wx: Float, wy: Float): Boolean {
@@ -257,9 +240,24 @@ class MindMapView(context: Context) : View(context) {
             c.drawCircle(lx, n.y, 10f, paint)
             paint.color = if (n.note.isNotEmpty()) Color.rgb(248, 223, 150)
                 else Color.rgb(154, 174, 195)
-            paint.textAlign = Paint.Align.CENTER
-            paint.textSize = 12f
-            c.drawText(if (n.commentVisible) "≡" else "×", lx, n.y + 4f, paint)
+            // Eye icon: visible = open eye, hidden = crossed-out eye.
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.65f
+            val eye = Path().apply {
+                moveTo(lx - 6.5f, n.y)
+                quadTo(lx, n.y - 6.0f, lx + 6.5f, n.y)
+                quadTo(lx, n.y + 6.0f, lx - 6.5f, n.y)
+                close()
+            }
+            c.drawPath(eye, paint)
+            paint.style = Paint.Style.FILL
+            c.drawCircle(lx, n.y, 2.4f, paint)
+            if (!n.commentVisible) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 2.0f
+                c.drawLine(lx - 7.5f, n.y + 7.5f, lx + 7.5f, n.y - 7.5f, paint)
+            }
+            paint.style = Paint.Style.FILL
             if (map.children(n.id).isNotEmpty()) {
                 paint.color = Color.rgb(25, 36, 52)
                 c.drawCircle(rx, n.y, 10f, paint)
@@ -270,10 +268,12 @@ class MindMapView(context: Context) : View(context) {
             paint.textAlign = Paint.Align.LEFT
 
             if (n.note.isNotBlank() && n.commentVisible) {
-                val comment = commentLayout(n)
+                val comment = m.commentLayout
                 c.save()
-                c.translate(n.x - comment.width / 2f, top + m.height + 7f)
-                comment.draw(c)
+                if (comment != null) {
+                    c.translate(n.x - comment.width / 2f, top + m.height + 7f)
+                    comment.draw(c)
+                }
                 c.restore()
             }
             if (n.collapsed) {
