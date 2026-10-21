@@ -158,19 +158,46 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
         val x: Float
         val y: Float
         if (settings.style == AutoLayout.Style.LEFT_TO_RIGHT) {
-            val stepX = kotlin.math.max(205f, gap)
-            val stepY = kotlin.math.max(74f, gap * 0.4f)
-            x = p.x + stepX
-            y = when (settings.alignment) {
-                AutoLayout.Align.TOP ->
-                    if (siblings.isEmpty()) p.y else siblings.maxOf { it.y } + stepY
-                AutoLayout.Align.BOTTOM ->
-                    if (siblings.isEmpty()) p.y else siblings.minOf { it.y } - stepY
-                AutoLayout.Align.CENTER -> when {
-                    siblings.isEmpty() -> p.y
-                    siblings.size % 2 == 1 -> p.y + ((siblings.size + 1) / 2) * stepY
-                    else -> p.y - (siblings.size / 2) * stepY
+            val provisional = MindNode(-1, p.id, title, 0f, 0f, p.color)
+            val newBox = NodeGeometry.measure(provisional)
+            val parentBox = NodeGeometry.measure(p)
+            val horizontalGap = kotlin.math.max(32f, gap * 0.28f)
+            val verticalGap = kotlin.math.max(22f, gap * 0.20f)
+            val sorted = siblings.sortedBy { it.y }
+            val sibling = sorted.firstOrNull()
+
+            // Maintain the selected column alignment whenever siblings exist.
+            x = if (sibling == null) {
+                p.x + parentBox.visualWidth / 2f + horizontalGap +
+                    newBox.visualWidth / 2f
+            } else {
+                val oldBox = NodeGeometry.measure(sibling)
+                val proposed = when (settings.horizontal) {
+                    AutoLayout.Horizontal.LEFT ->
+                        sibling.x - oldBox.width / 2f + newBox.width / 2f
+                    AutoLayout.Horizontal.CENTER -> sibling.x
+                    AutoLayout.Horizontal.RIGHT ->
+                        sibling.x + oldBox.width / 2f - newBox.width / 2f
                 }
+                kotlin.math.max(proposed,
+                    p.x + parentBox.visualWidth / 2f + horizontalGap +
+                        newBox.visualWidth / 2f)
+            }
+            y = when (settings.alignment) {
+                AutoLayout.Align.TOP, AutoLayout.Align.CENTER ->
+                    if (sorted.isEmpty()) p.y else {
+                        val bottom = sorted.maxOf {
+                            it.y + NodeGeometry.measure(it).bottom
+                        }
+                        bottom + verticalGap + newBox.top
+                    }
+                AutoLayout.Align.BOTTOM ->
+                    if (sorted.isEmpty()) p.y else {
+                        val top = sorted.minOf {
+                            it.y - NodeGeometry.measure(it).top
+                        }
+                        top - verticalGap - newBox.bottom
+                    }
             }
         } else {
             val parent = find(p.parentId)
