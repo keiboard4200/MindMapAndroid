@@ -102,12 +102,29 @@ class MindMapView(context: Context) : View(context) {
 
     fun fitAll() {
         if (width == 0 || height == 0 || map.nodes.isEmpty()) return
-        // Hidden descendants should not force an unnecessarily tiny fit.
+        // Fit both variable-size titles and visible out-of-box comments.
+        // Hidden descendants are deliberately excluded from the bounding box.
         val shown = map.visibleNodes(3.2f)
-        val minX = shown.minOf { it.x } - 95f
-        val maxX = shown.maxOf { it.x } + 95f
-        val minY = shown.minOf { it.y } - 60f
-        val maxY = shown.maxOf { it.y } + 60f
+        if (shown.isEmpty()) return
+        var minX = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+        for (node in shown) {
+            val m = metrics(node)
+            var halfWidth = m.width / 2f
+            minY = min(minY, node.y - m.height / 2f)
+            var bottom = node.y + m.height / 2f
+            if (node.note.isNotBlank() && node.commentVisible) {
+                val comment = commentLayout(node)
+                halfWidth = max(halfWidth, comment.width / 2f)
+                bottom += 7f + comment.height
+            }
+            minX = min(minX, node.x - halfWidth)
+            maxX = max(maxX, node.x + halfWidth)
+            maxY = max(maxY, bottom)
+        }
+        minX -= 24f; maxX += 24f; minY -= 24f; maxY += 24f
         zoom = min(
             (width - 24f * densityScale) / (maxX - minX) / densityScale,
             (height - 24f * densityScale) / (maxY - minY) / densityScale
