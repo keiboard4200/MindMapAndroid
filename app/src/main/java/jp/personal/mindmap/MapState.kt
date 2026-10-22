@@ -84,7 +84,7 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
                     obj.optBoolean("commentVisible", true)
                 ))
             }
-            require(result.count { it.parentId == null } == 1) { "ルートは1個必要です" }
+            require(result.any { it.parentId == null }) { "ルートが1個以上必要です" }
             val byId = result.associateBy { it.id }
             for (node in result) {
                 val visited = mutableSetOf<Long>()
@@ -99,6 +99,7 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
     }
 
     fun root(): MindNode = nodes.first { it.parentId == null }
+    fun roots(): List<MindNode> = nodes.filter { it.parentId == null }
     fun find(id: Long?): MindNode? = nodes.firstOrNull { it.id == id }
     fun children(id: Long): List<MindNode> = nodes.filter { it.parentId == id }
 
@@ -224,18 +225,82 @@ class MapState(var title: String, val nodes: MutableList<MindNode>) {
         return node
     }
 
-    /** Delete just one node, reparenting immediate children without moving them. */
+    /**
+     * Remove one node, preserving its children. If it was a root, its children
+     * become separate roots. At least one root must remain at all times.
+     */
     fun deleteNodeOnly(id: Long) {
         val target = find(id) ?: return
-        val parent = target.parentId ?: return
-        for (child in children(id)) child.parentId = parent
+        val newParent = target.parentId
+        if (nodes.size == 1) return
+        for (child in children(id)) child.parentId = newParent
+        if (target.parentId == null && roots().size == 1 && children(id).isEmpty()) return
         nodes.removeAll { it.id == id }
     }
 
     fun deleteBranch(id: Long) {
-        if (id == root().id) return
+        val target = find(id) ?: return
+        if (target.parentId == null && roots().size <= 1) return
         val ids = descendants(id).map { it.id }.toMutableSet().apply { add(id) }
         nodes.removeAll { it.id in ids }
+    }
+
+    /** Pick an open spot to the right of all existing, visible content. */
+    fun freeRootPosition(): Pair<Float, Float> {
+        val shown = visibleNodes(3.2f)
+        val right = shown.maxOfOrNull {
+            val b = NodeGeometry.measure(it)
+            it.x + b.visualWidth / 2f
+        } ?: 0f
+        return (right + 280f) to (roots().firstOrNull()?.y ?: 0f)
+    }
+
+    fun addRoot(title: String): MindNode {
+        require(nodes.size < 5000) { "ノード数の上限に達しました" }
+        val (x, y) = freeRootPosition()
+        val node = MindNode((nodes.maxOfOrNull { it.id } ?: 0L) + 1L,
+            null, title.take(300), x, y, palette[roots().size % palette.size])
+        nodes.add(node)
+        return node
+    }
+
+    /**
+     * Portable snapshot. The copied head is a temporary independent root, so
+     * it can be pasted either as a new root or under a selected target node.
+     */
+    fun copyJson(id: Long, withDescendants: Boolean = true): String {
+        val head = find(id) ?: error("コピーするノードがありません")
+        val source = if (withDescendants) listOf(head) + descendants(id) else listOf(head)
+        val copy = source.map { it.copy(parentId = if (it.id == id) null else it.parentId) }
+        return MapState(head.title, copy.toMutableList()).asJson()
+    }
+
+    /** Clone all nodes with fresh IDs, preserving notes, colours and geometry. */
+    fun pasteJson(snapshot: String, newParentId: Long? = null): MindNode {
+        val fragment = parse(snapshot)
+        require(nodes.size + fragment.nodes.size <= 5000) { "ノード数の上限に達しました" }
+        val sourceRoot = fragment.root()
+        val parent = if (newParentId == null) null
+            else find(newParentId) ?: error("貼り付け先のノードがありません")
+        val (anchorX, anchorY) = if (parent == null) freeRootPosition()
+            else Pair(parent.x + NodeGeometry.measure(parent).visualWidth / 2f +
+                NodeGeometry.measure(sourceRoot).visualWidth / 2f + 100f,
+                parent.y + (children(parent.id).size * 95f))
+        val idMap = mutableMapOf<Long, Long>()
+        var next = (nodes.maxOfOrNull { it.id } ?: 0L) + 1L
+        for (n in fragment.nodes) idMap[n.id] = next++
+        val pasted = fragment.nodes.map { n ->
+            n.copy(
+                id = idMap.getValue(n.id),
+                parentId = if (n.id == sourceRoot.id) parent?.id else
+                    idMap[n.parentId] ?: error("コピー内の親IDが不正です"),
+                x = anchorX + n.x - sourceRoot.x,
+                y = anchorY + n.y - sourceRoot.y
+            )
+        }
+        nodes.addAll(pasted)
+        if (parent != null) parent.collapsed = false
+        return pasted.first { it.id == idMap[sourceRoot.id] }
     }
 
     fun asJson(): String {
