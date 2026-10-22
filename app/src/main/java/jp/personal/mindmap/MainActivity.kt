@@ -36,6 +36,8 @@ class MainActivity : Activity() {
     private val redoStack = ArrayDeque<String>()
     private var branchMode = false
     private var map = MapState.blank()
+    private val archiveStore by lazy { ArchiveStore(this) }
+    private var clipboardJson: String? = null
     private val createJsonRequest = 101
     private val openJsonRequest = 102
 
@@ -48,6 +50,8 @@ class MainActivity : Activity() {
             MapState.blank()
         }
         savedLayout = readLayoutSettings()
+        clipboardJson = getSharedPreferences("map_clipboard", MODE_PRIVATE)
+            .getString("snapshot", null)
         setupScreen()
         canvas.map = map
         canvas.post { canvas.fitAll() }
@@ -240,7 +244,10 @@ class MainActivity : Activity() {
     }
 
     private fun addChild() {
-        val parentId = canvas.selectedId ?: map.root().id
+        val parentId = canvas.selectedId ?: if (map.roots().size == 1) map.root().id else {
+            toast("複数のルートがあります。親にするノードを選択してください")
+            return
+        }
         // Input first: no default text to erase, and cancel creates no node.
         inputDialog("新しいノード", "", "ノード名を入力") { name ->
             lateinit var added: MindNode
@@ -250,6 +257,125 @@ class MainActivity : Activity() {
             canvas.select(added.id)
             canvas.focusOn(added.id)
         }
+    }
+
+    private fun addIndependentRoot() {
+        inputDialog("独立したルートを追加", "", "ルートのタイトル") { name ->
+            lateinit var added: MindNode
+            editTransaction { added = map.addRoot(name) }
+            canvas.select(added.id)
+            canvas.focusOn(added.id)
+            toast("独立したルートを追加しました")
+        }
+    }
+
+    private fun copyNode(id: Long, includeChildren: Boolean) {
+        try {
+            val snapshot = map.copyJson(id, includeChildren)
+            clipboardJson = snapshot
+            getSharedPreferences("map_clipboard", MODE_PRIVATE).edit()
+                .putString("snapshot", snapshot).apply()
+            val count = MapState.parse(snapshot).nodes.size
+            toast(if (includeChildren) "枝全体（$count ノード）をコピーしました"
+                else "ノードだけコピーしました")
+        } catch (ex: Exception) {
+            showError("コピーに失敗しました", ex)
+        }
+    }
+
+    private fun showPasteMenu() {
+        val snapshot = clipboardJson ?: run {
+            toast("先にノードをコピーしてください")
+            return
+        }
+        val destination = canvas.selectedId
+        val options = if (destination == null)
+            arrayOf("独立したルートとして貼り付け")
+        else arrayOf("独立したルートとして貼り付け", "選択ノードの子として貼り付け")
+        AlertDialog.Builder(this).setTitle("貼り付け先を選択")
+            .setItems(options) { _, which ->
+                try {
+                    val parentId = if (which == 1) destination else null
+                    lateinit var pasted: MindNode
+                    editTransaction { pasted = map.pasteJson(snapshot, parentId) }
+                    canvas.select(pasted.id)
+                    canvas.focusOn(pasted.id)
+                    toast("枝を貼り付けました")
+                } catch (ex: Exception) {
+                    showError("貼り付けに失敗しました", ex)
+                }
+            }.setNegativeButton("キャンセル", null).show()
+    }
+
+    private fun archiveRoot(id: Long) {
+        val node = map.find(id)
+        if (node == null || node.parentId != null) {
+            toast("アーカイブに保存できるのはルートノードのみです")
+            return
+        }
+        try {
+            val entry = archiveStore.saveRoot(map, id)
+            toast("「${entry.title}」をアーカイブへコピー保存しました")
+        } catch (ex: Exception) {
+            showError("アーカイブ保存に失敗しました", ex)
+        }
+    }
+
+    private fun showArchives() {
+        val items = try {
+            archiveStore.entries()
+        } catch (ex: Exception) {
+            showError("アーカイブの読み込みに失敗しました", ex)
+            return
+        }
+        if (items.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("アーカイブ")
+                .setMessage("保存されたルートはありません。ルートノードを長押しして保存できます。")
+                .setPositiveButton("閉じる", null).show()
+            return
+        }
+        val format = java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.JAPAN)
+        val labels = items.map {
+            "${it.title}  (${it.nodeCount}件)\n${format.format(java.util.Date(it.savedAt))}"
+        }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("ルートのアーカイブ")
+            .setItems(labels) { _, index ->
+                val entry = items[index]
+                AlertDialog.Builder(this).setTitle(entry.title)
+                    .setMessage("${entry.nodeCount}ノードの保存済みスナップショット。元のマップには影響しません。")
+                    .setPositiveButton("独立ルートとして復元") { _, _ ->
+                        try {
+                            lateinit var restored: MindNode
+                            editTransaction { restored = map.pasteJson(entry.json) }
+                            canvas.select(restored.id)
+                            canvas.focusOn(restored.id)
+                            toast("アーカイブから復元しました")
+                        } catch (ex: Exception) {
+                            showError("アーカイブの復元に失敗しました", ex)
+                        }
+                    }
+                    .setNeutralButton("アーカイブから削除") { _, _ ->
+                        AlertDialog.Builder(this)
+                            .setMessage("保存した「${entry.title}」をアーカイブから削除しますか？現在のマップには影響しません。")
+                            .setNegativeButton("キャンセル", null)
+                            .setPositiveButton("削除") { _, _ ->
+                                try {
+                                    archiveStore.delete(entry.id)
+                                    toast("アーカイブから削除しました")
+                                } catch (ex: Exception) {
+                                    showError("アーカイブの削除に失敗しました", ex)
+                                }
+                            }.show()
+                    }
+                    .setNegativeButton("戻る", null).show()
+            }
+            .setNegativeButton("閉じる", null).show()
+    }
+
+    private fun showError(title: String, error: Exception) {
+        AlertDialog.Builder(this).setTitle(title)
+            .setMessage(error.message ?: "不明なエラー")
+            .setPositiveButton("閉じる", null).show()
     }
 
     private fun renameMap() {
