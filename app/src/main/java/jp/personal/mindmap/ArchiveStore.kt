@@ -65,6 +65,38 @@ class ArchiveStore(private val context: Context) {
         return archive
     }
 
+    /** Downloadable backup; separate from active-map JSON. */
+    fun exportJson(): String = if (file.exists()) file.readText(Charsets.UTF_8) else "[]"
+
+    /** Merge valid archive entries without replacing existing entries. */
+    fun importJson(json: String): Int {
+        val array = JSONArray(json)
+        require(array.length() <= 300) { "アーカイブが多すぎます" }
+        val old = entries()
+        val existingIds = old.mapTo(mutableSetOf()) { it.id }
+        val incoming = mutableListOf<Entry>()
+        for (i in 0 until array.length()) {
+            val obj = array.getJSONObject(i)
+            val data = obj.getString("json")
+            val snapshot = MapState.parse(data)
+            require(snapshot.roots().size == 1) { "アーカイブにはルートが1個必要です" }
+            val key = obj.optString("id", "")
+            if (key.isNotEmpty() && key in existingIds) continue
+            val id = if (key.isNotEmpty()) key else UUID.randomUUID().toString()
+            existingIds.add(id)
+            incoming.add(Entry(
+                id,
+                obj.optString("title", snapshot.root().title).take(300),
+                obj.optLong("savedAt", System.currentTimeMillis()),
+                snapshot.nodes.size,
+                snapshot.asJson()
+            ))
+        }
+        require(old.size + incoming.size <= 300) { "アーカイブの上限は300件です" }
+        if (incoming.isNotEmpty()) commit(incoming + old)
+        return incoming.size
+    }
+
     fun delete(id: String) {
         val items = entries()
         require(items.any { it.id == id }) { "該当アーカイブがありません" }
