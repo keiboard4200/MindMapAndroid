@@ -40,6 +40,8 @@ class MainActivity : Activity() {
     private var clipboardJson: String? = null
     private val createJsonRequest = 101
     private val openJsonRequest = 102
+    private val archiveExportRequest = 103
+    private val archiveImportRequest = 104
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -774,7 +776,9 @@ class MainActivity : Activity() {
             "100ノードのテストマップ",
             "JSONを書き出す",
             "JSONを読み込む",
-            "操作方法"
+            "操作方法",
+            "アーカイブを書き出す（バックアップ）",
+            "アーカイブを読み込む"
         )
         AlertDialog.Builder(this).setTitle("マップ操作").setItems(options) { _, which ->
             when (which) {
@@ -795,6 +799,8 @@ class MainActivity : Activity() {
                 11 -> exportJson()
                 12 -> importJson()
                 13 -> showHelp()
+                14 -> exportArchive()
+                15 -> importArchive()
             }
         }.show()
     }
@@ -846,6 +852,23 @@ class MainActivity : Activity() {
         startActivityForResult(intent, openJsonRequest)
     }
 
+    private fun exportArchive() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, "mindmap-archive-backup.json")
+        }
+        startActivityForResult(intent, archiveExportRequest)
+    }
+
+    private fun importArchive() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+        }
+        startActivityForResult(intent, archiveImportRequest)
+    }
+
     @Deprecated("Android file picker callback for the dependency-free prototype")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -864,6 +887,28 @@ class MainActivity : Activity() {
                         ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
                         ?: error("ファイルを開けません")
                     confirmNewMap(MapState.parse(input))
+                }
+                archiveExportRequest -> {
+                    contentResolver.openOutputStream(uri)?.use {
+                        it.write(archiveStore.exportJson().toByteArray(Charsets.UTF_8))
+                    } ?: error("出力先を開けません")
+                    toast("アーカイブのバックアップを書き出しました")
+                }
+                archiveImportRequest -> {
+                    val text = contentResolver.openInputStream(uri)
+                        ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                        ?: error("アーカイブのバックアップを開けません")
+                    AlertDialog.Builder(this).setTitle("アーカイブを取り込み")
+                        .setMessage("バックアップの保存済みルートを追加します。現在のアーカイブは残ります。")
+                        .setNegativeButton("キャンセル", null)
+                        .setPositiveButton("取り込む") { _, _ ->
+                            try {
+                                val count = archiveStore.importJson(text)
+                                toast("${count}件のアーカイブを取り込みました")
+                            } catch (ex: Exception) {
+                                showError("アーカイブの取り込みに失敗しました", ex)
+                            }
+                        }.show()
                 }
             }
         } catch (ex: Exception) {
