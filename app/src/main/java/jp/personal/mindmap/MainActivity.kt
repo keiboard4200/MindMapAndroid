@@ -499,18 +499,21 @@ class MainActivity : Activity() {
 
     private fun confirmDelete(id: Long) {
         val node = map.find(id) ?: return
-        if (node.parentId == null) {
-            toast("ルートノードは削除できません")
+        if (node.parentId == null && map.roots().size <= 1) {
+            toast("最後のルートは削除できません")
             return
         }
         val descendants = map.descendants(id).size
         val options = arrayOf(
-            "このノードだけ削除（子は親に付け替え）",
+            if (node.parentId == null) "このルートだけ削除（子を独立ルートに）"
+            else "このノードだけ削除（子は親に付け替え）",
             "この枝を削除（子孫" + descendants + "件も削除）"
         )
         AlertDialog.Builder(this).setTitle("削除方法： " + node.title)
             .setItems(options) { _, choice ->
-                val message = if (choice == 0) "このノードだけを削除し、子ノードは上位の親に接続しますか？"
+                val message = if (choice == 0)
+                    if (node.parentId == null) "このルートだけ削除し、その子ノードを独立したルートにしますか？"
+                    else "このノードだけを削除し、子ノードは上位の親に接続しますか？"
                     else "このノードと配下" + descendants + "件を完全に削除しますか？"
                 AlertDialog.Builder(this).setMessage(message)
                     .setNegativeButton("キャンセル", null)
@@ -526,28 +529,38 @@ class MainActivity : Activity() {
 
     private fun showNodeMenu(id: Long) {
         val node = map.find(id) ?: return
-        val names = arrayOf(
+        val isRoot = node.parentId == null
+        val options = mutableListOf(
             "タイトルとコメントを編集",
             "子ノードを追加",
             "色を変更",
             "コメントを編集",
             if (node.collapsed) "子ノードを展開" else "子ノードを折りたたむ",
-            "ノードを中心に表示",
+            "このノードを中心に表示",
+            "ノードのみコピー",
+            "配下の枝をすべてコピー",
+            "貼り付け先を選ぶ",
             "削除"
         )
-        AlertDialog.Builder(this).setTitle(node.title).setItems(names) { _, which ->
-            when (which) {
-                0 -> editNodeDetails(id)
-                1 -> { canvas.select(id); addChild() }
-                2 -> colorMenu(id)
-                3 -> editNote(id)
-                4 -> if (map.children(id).isNotEmpty()) editTransaction {
-                    node.collapsed = !node.collapsed
-                } else toast("子ノードがありません")
-                5 -> canvas.focusOn(id)
-                6 -> confirmDelete(id)
-            }
-        }.show()
+        if (isRoot) options.add("ルート全体をアーカイブに保存")
+        AlertDialog.Builder(this).setTitle(node.title)
+            .setItems(options.toTypedArray()) { _, which ->
+                when (which) {
+                    0 -> editNodeDetails(id)
+                    1 -> { canvas.select(id); addChild() }
+                    2 -> colorMenu(id)
+                    3 -> editNote(id)
+                    4 -> if (map.children(id).isNotEmpty()) editTransaction {
+                        node.collapsed = !node.collapsed
+                    } else toast("子ノードがありません")
+                    5 -> canvas.focusOn(id)
+                    6 -> copyNode(id, false)
+                    7 -> copyNode(id, true)
+                    8 -> { canvas.select(id); showPasteMenu() }
+                    9 -> confirmDelete(id)
+                    10 -> if (isRoot) archiveRoot(id)
+                }
+            }.show()
     }
 
     private fun colorMenu(id: Long) {
@@ -747,17 +760,41 @@ class MainActivity : Activity() {
     }
 
     private fun showAppMenu() {
-        val options = arrayOf("新しいマップ", "100ノードのテストマップ",
-            "整列設定", "JSONを書き出す", "JSONを読み込む", "全体にフィット", "操作方法")
+        val options = arrayOf(
+            "＋ 独立ルートを追加",
+            "選択ノードをコピー",
+            "選択ノードの枝をコピー",
+            "クリップボードから貼り付け",
+            "ルートをアーカイブに保存",
+            "アーカイブ一覧・復元",
+            "整列設定",
+            "全体を整列（保存済み設定）",
+            "全体にフィット",
+            "新しいマップ",
+            "100ノードのテストマップ",
+            "JSONを書き出す",
+            "JSONを読み込む",
+            "操作方法"
+        )
         AlertDialog.Builder(this).setTitle("マップ操作").setItems(options) { _, which ->
             when (which) {
-                0 -> confirmNewMap(MapState.blank())
-                1 -> confirmNewMap(MapState.sample100())
-                2 -> showAutoLayoutDialog()
-                3 -> exportJson()
-                4 -> importJson()
-                5 -> canvas.fitAll()
-                6 -> showHelp()
+                0 -> addIndependentRoot()
+                1 -> canvas.selectedId?.let { copyNode(it, false) }
+                    ?: toast("コピーするノードを選択してください")
+                2 -> canvas.selectedId?.let { copyNode(it, true) }
+                    ?: toast("コピーするノードを選択してください")
+                3 -> showPasteMenu()
+                4 -> canvas.selectedId?.let { archiveRoot(it) }
+                    ?: toast("ルートノードを選択してください")
+                5 -> showArchives()
+                6 -> showAutoLayoutDialog()
+                7 -> executeSavedLayout()
+                8 -> canvas.fitAll()
+                9 -> confirmNewMap(MapState.blank())
+                10 -> confirmNewMap(MapState.sample100())
+                11 -> exportJson()
+                12 -> importJson()
+                13 -> showHelp()
             }
         }.show()
     }
@@ -784,7 +821,9 @@ class MainActivity : Activity() {
             "・ノード長押し：編集・色変更・削除\n" +
             "・上部「整列」：保存した設定で即座に整列\n" +
             "・上部「設定」：整列設定を保存\n" +
-            "・下部「畳む／展開」：子ノードを非表示／表示\n" +
+            "・左の目：コメント表示切替／右の＋−：子ノード表示切替\n" +
+            "・長押し：ノードのみ／枝ごとコピー、貼り付け、削除\n" +
+            "・⋮：独立ルートの追加、ルートのアーカイブ\n" +
             "・全体：マップ全体を表示\n" +
             "・大切なデータはJSONでバックアップしてください"
         ).setPositiveButton("閉じる", null).show()
