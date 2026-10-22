@@ -26,29 +26,70 @@ object AutoLayout {
     )
 
     fun apply(map: MapState, selectedId: Long?, settings: Settings): Int {
-        val root = if (settings.selectedBranchOnly) map.find(selectedId) ?: return 0
-                   else map.root()
+        val heads = if (settings.selectedBranchOnly) listOf(map.find(selectedId) ?: return 0)
+                    else map.roots()
+        if (heads.isEmpty()) return 0
         val before = map.nodes.associate { it.id to (it.x to it.y) }
-        val changed = if (settings.style == Style.LEFT_TO_RIGHT) {
-            leftToRight(map, root, settings)
-        } else {
-            radial(map, root, settings)
+        val accountedFor = mutableSetOf<Long>()
+        for (head in heads) {
+            accountedFor.add(head.id)
+            val assigned = if (settings.style == Style.LEFT_TO_RIGHT)
+                leftToRight(map, head, settings)
+            else radial(map, head, settings)
+            accountedFor.addAll(assigned)
         }
 
-        // Folded descendants do not consume space, but preserve their relative
-        // coordinates when the visible, folded parent changes position.
-        for (folded in map.nodes.filter { it.collapsed && changed.contains(it.id) }) {
-            val old = before[folded.id] ?: continue
-            val dx = folded.x - old.first
-            val dy = folded.y - old.second
-            for (hidden in map.descendants(folded.id)) {
-                hidden.x += dx
-                hidden.y += dy
+        if (!settings.selectedBranchOnly && heads.size > 1) {
+            fun members(head: MindNode): List<MindNode> =
+                listOf(head) + map.descendants(head.id)
+
+            fun bounds(head: MindNode): Pair<Float, Float> {
+                val ids = members(head).mapTo(mutableSetOf()) { it.id }
+                val visible = map.visibleNodes(3.2f).filter { it.id in ids }
+                if (visible.isEmpty()) return head.y to head.y
+                val low = visible.minOf {
+                    it.y - NodeGeometry.measure(it).top
+                }
+                val high = visible.maxOf {
+                    it.y + NodeGeometry.measure(it).bottom
+                }
+                return low to high
+            }
+
+            val firstX = heads.first().x
+            var lowerBoundary = bounds(heads.first()).second
+            val gap = max(60f, settings.spacing * 0.35f)
+            for (head in heads.drop(1)) {
+                val (top, bottom) = bounds(head)
+                val dx = firstX - head.x
+                val dy = lowerBoundary + gap - top
+                val group = members(head)
+                for (node in group) {
+                    node.x += dx
+                    node.y += dy
+                    accountedFor.add(node.id)
+                }
+                lowerBoundary = bottom + dy
             }
         }
-        return map.nodes.count { n ->
-            val p = before[n.id]
-            p != null && (p.first != n.x || p.second != n.y)
+
+        // For folded descendants that were excluded from visual layout, move
+        // them by the nearest repositioned ancestor's displacement.
+        for (node in map.nodes) {
+            if (node.id in accountedFor) continue
+            val original = before[node.id] ?: continue
+            var ancestor = map.find(node.parentId)
+            while (ancestor != null && ancestor.id !in accountedFor)
+                ancestor = map.find(ancestor.parentId)
+            if (ancestor != null) {
+                val oldParent = before[ancestor.id] ?: continue
+                node.x = original.first + ancestor.x - oldParent.first
+                node.y = original.second + ancestor.y - oldParent.second
+            }
+        }
+        return map.nodes.count { node ->
+            val old = before[node.id]
+            old != null && (old.first != node.x || old.second != node.y)
         }
     }
 
