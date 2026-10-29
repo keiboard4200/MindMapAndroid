@@ -34,6 +34,7 @@ class TodoPanel(
     private val muted = Color.rgb(177, 196, 218)
     private val surface = Color.rgb(35, 48, 65)
     private val format = SimpleDateFormat("yyyy/MM/dd (E) HH:mm", Locale.JAPAN)
+    private val completedFormat = SimpleDateFormat("yy/MM/dd_HH:mm", Locale.JAPAN)
     private val listButton = button("")
     private val stats = label("", 13f, muted)
     private val content = LinearLayout(activity).apply { orientation = VERTICAL }
@@ -137,6 +138,11 @@ class TodoPanel(
             val date = task.dueAt
             val badges = mutableListOf<String>()
             if (date != null) badges.add("期限: " + format.format(Date(date)))
+            if (task.done) badges.add(
+                if (task.completedAt != null)
+                    "完了: " + completedFormat.format(Date(task.completedAt!!))
+                else "完了: 日時未記録（旧版）"
+            )
             if (task.priority == 2) badges.add("重要")
             if (task.remindBeforeMinutes >= 0 && date != null) badges.add(
                 "通知: " + when (task.remindBeforeMinutes) {
