@@ -2,6 +2,9 @@ package jp.personal.mindmap
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.content.Intent
 import android.graphics.Color
 import android.content.res.ColorStateList
@@ -26,6 +29,11 @@ class MainActivity : Activity() {
     private lateinit var canvas: MindMapView
     private lateinit var titleView: TextView
     private lateinit var modeButton: Button
+    private lateinit var mapPanel: LinearLayout
+    private lateinit var todoPanel: TodoPanel
+    private lateinit var mapTab: Button
+    private lateinit var todoTab: Button
+    private val todoStore by lazy { TodoStore(this) }
     private var savedLayout = AutoLayout.Settings(
         selectedBranchOnly = false,
         spacing = 220f,
@@ -42,6 +50,9 @@ class MainActivity : Activity() {
     private val openJsonRequest = 102
     private val archiveExportRequest = 103
     private val archiveImportRequest = 104
+    private val todoExportRequest = 105
+    private val todoImportRequest = 106
+    private val notificationRequest = 107
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,9 +65,12 @@ class MainActivity : Activity() {
         savedLayout = readLayoutSettings()
         clipboardJson = getSharedPreferences("map_clipboard", MODE_PRIVATE)
             .getString("snapshot", null)
+        TodoNotifications.createChannel(this)
         setupScreen()
         canvas.map = map
         canvas.post { canvas.fitAll() }
+        todoStore.rescheduleAll()
+        if (intent.getBooleanExtra("open_todo", false)) selectMode(true)
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density + 0.5f).toInt()
@@ -89,6 +103,19 @@ class MainActivity : Activity() {
         }
         setContentView(main)
 
+        val tabs = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(3), dp(10), dp(3))
+        }
+        mapTab = actionButton("マインドマップ") { selectMode(false) }
+        todoTab = actionButton("ToDoリスト") { selectMode(true) }
+        tabs.addView(mapTab, LinearLayout.LayoutParams(0, dp(49), 1f))
+        tabs.addView(todoTab, LinearLayout.LayoutParams(0, dp(49), 1f))
+        main.addView(tabs)
+
+        mapPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -113,7 +140,7 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(dp(60), dp(48)))
         top.addView(actionButton("⋮") { showAppMenu() },
             LinearLayout.LayoutParams(dp(48), dp(48)))
-        main.addView(top)
+        mapPanel.addView(top)
 
         canvas = MindMapView(this)
         canvas.onSelectionChanged = { id ->
@@ -144,7 +171,7 @@ class MainActivity : Activity() {
                 save()
             }
         }
-        main.addView(canvas,
+        mapPanel.addView(canvas,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val bottom = LinearLayout(this).apply {
@@ -170,7 +197,60 @@ class MainActivity : Activity() {
         addBottom("削除") { deleteSelected() }
         addBottom("↶") { undo() }
         addBottom("↷") { redo() }
-        main.addView(bottom)
+        mapPanel.addView(bottom)
+        main.addView(mapPanel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        todoPanel = TodoPanel(
+            this, todoStore,
+            { requestTodoNotificationPermission() },
+            { exportTodoJson() },
+            { importTodoJson() }
+        )
+        main.addView(todoPanel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        selectMode(false)
+    }
+
+    private fun selectMode(todo: Boolean) {
+        mapPanel.visibility = if (todo) View.GONE else View.VISIBLE
+        todoPanel.visibility = if (todo) View.VISIBLE else View.GONE
+        mapTab.backgroundTintList = ColorStateList.valueOf(
+            if (!todo) Color.rgb(48, 111, 171) else Color.rgb(37, 50, 67))
+        todoTab.backgroundTintList = ColorStateList.valueOf(
+            if (todo) Color.rgb(48, 111, 171) else Color.rgb(37, 50, 67))
+        if (todo) todoPanel.refresh()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra("open_todo", false)) selectMode(true)
+    }
+
+    private fun requestTodoNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            AlertDialog.Builder(this).setTitle("ToDoの通知を許可")
+                .setMessage("期限のリマインダーを受け取るには通知の許可が必要です。許可しなくてもToDoは保存できます。")
+                .setNegativeButton("後で", null)
+                .setPositiveButton("許可を設定") { _, _ ->
+                    requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                        notificationRequest)
+                }.show()
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == notificationRequest) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED)
+                toast("通知が有効になりました")
+            else toast("通知が許可されていないためリマインダーは表示されません")
+        }
     }
 
     private fun toggleMoveMode() {
@@ -869,6 +949,23 @@ class MainActivity : Activity() {
         startActivityForResult(intent, archiveImportRequest)
     }
 
+    private fun exportTodoJson() {
+        val request = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, "mindmap-todos-backup.json")
+        }
+        startActivityForResult(request, todoExportRequest)
+    }
+
+    private fun importTodoJson() {
+        val request = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+        }
+        startActivityForResult(request, todoImportRequest)
+    }
+
     @Deprecated("Android file picker callback for the dependency-free prototype")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -893,6 +990,29 @@ class MainActivity : Activity() {
                         it.write(archiveStore.exportJson().toByteArray(Charsets.UTF_8))
                     } ?: error("出力先を開けません")
                     toast("アーカイブのバックアップを書き出しました")
+                }
+                todoExportRequest -> {
+                    contentResolver.openOutputStream(uri)?.use {
+                        it.write(todoStore.exportJson().toByteArray(Charsets.UTF_8))
+                    } ?: error("ToDoの書き出し先を開けません")
+                    toast("ToDoのJSONを書き出しました")
+                }
+                todoImportRequest -> {
+                    val text = contentResolver.openInputStream(uri)
+                        ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                        ?: error("ToDoファイルを開けません")
+                    AlertDialog.Builder(this).setTitle("ToDoを取り込む")
+                        .setMessage("現在のToDoリストとタスクは、選択したJSONの内容に置き換わります。続けますか？")
+                        .setNegativeButton("キャンセル", null)
+                        .setPositiveButton("置き換える") { _, _ ->
+                            try {
+                                todoStore.importJson(text)
+                                todoPanel.refresh()
+                                toast("ToDoを読み込みました")
+                            } catch (ex: Exception) {
+                                showError("ToDoの読み込みに失敗しました", ex)
+                            }
+                        }.show()
                 }
                 archiveImportRequest -> {
                     val text = contentResolver.openInputStream(uri)
