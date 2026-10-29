@@ -39,6 +39,8 @@ class TodoStore(private val context: Context) {
         }
     }
 
+    fun persistSelection() { save() }
+
     fun deleteList(id: Long) {
         require(lists.size > 1) { "最後のリストは削除できません" }
         val removed = tasks.filter { it.listId == id }.toList()
