@@ -688,6 +688,16 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun persistLayoutSettings(layout: AutoLayout.Settings) {
+        getSharedPreferences("layout_settings", MODE_PRIVATE).edit()
+            .putString("style", layout.style.name)
+            .putString("alignment", layout.alignment.name)
+            .putString("horizontal", layout.horizontal.name)
+            .putBoolean("selected_only", layout.selectedBranchOnly)
+            .putFloat("spacing", layout.spacing)
+            .apply()
+    }
+
     private fun executeSavedLayout() {
         val id = canvas.selectedId
         if (savedLayout.selectedBranchOnly && id == null) {
@@ -830,13 +840,7 @@ class MainActivity : Activity() {
                     alignment = alignment,
                     horizontal = horizontal
                 )
-                getSharedPreferences("layout_settings", MODE_PRIVATE).edit()
-                    .putString("style", savedLayout.style.name)
-                    .putString("alignment", savedLayout.alignment.name)
-                    .putString("horizontal", savedLayout.horizontal.name)
-                    .putBoolean("selected_only", savedLayout.selectedBranchOnly)
-                    .putFloat("spacing", savedLayout.spacing)
-                    .apply()
+                persistLayoutSettings(savedLayout)
                 toast("整列設定を保存しました")
             }.show()
     }
@@ -854,7 +858,7 @@ class MainActivity : Activity() {
             "全体にフィット",
             "新しいマップ",
             "100ノードのテストマップ",
-            "JSONを書き出す",
+            "JSONを書き出す（マップ＋整列＋ToDo）",
             "JSONを読み込む",
             "操作方法",
             "アーカイブを書き出す（バックアップ）",
@@ -915,11 +919,51 @@ class MainActivity : Activity() {
         ).setPositiveButton("閉じる", null).show()
     }
 
+    private fun confirmCombinedRestore(backup: BackupBundle.Restored) {
+        val todoJson = backup.todoJson ?: return
+        val layout = backup.layout ?: return
+        val todoCount = org.json.JSONObject(todoJson).getJSONArray("tasks").length()
+        AlertDialog.Builder(this).setTitle("バックアップを復元")
+            .setMessage(
+                "マインドマップ（${backup.map.nodes.size}ノード）、" +
+                "整列設定、ToDo（${todoCount}件）を復元します。" +
+                "現在のマップ・整列設定・ToDoは上書きされます。" +
+                "アーカイブには影響しません。続けますか？"
+            )
+            .setNegativeButton("キャンセル", null)
+            .setPositiveButton("すべて復元") { _, _ ->
+                val previousMap = map.asJson()
+                val previousTodos = todoStore.exportJson()
+                val previousLayout = savedLayout
+                try {
+                    // All sections are validated before confirming. Apply the
+                    // backup only after the user explicitly approves replacement.
+                    todoStore.importJson(todoJson)
+                    savedLayout = layout
+                    persistLayoutSettings(layout)
+                    replaceMap(backup.map)
+                    undoStack.clear()
+                    redoStack.clear()
+                    todoPanel.refresh()
+                    toast("マップ・整列設定・ToDoを復元しました")
+                } catch (ex: Exception) {
+                    runCatching {
+                        todoStore.importJson(previousTodos)
+                        savedLayout = previousLayout
+                        persistLayoutSettings(previousLayout)
+                        replaceMap(MapState.parse(previousMap))
+                        todoPanel.refresh()
+                    }
+                    showError("復元に失敗しました", ex)
+                }
+            }.show()
+    }
+
     private fun exportJson() {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/json"
-            putExtra(Intent.EXTRA_TITLE, "mindmap-backup.json")
+            putExtra(Intent.EXTRA_TITLE, "mindmap-full-backup.json")
         }
         startActivityForResult(intent, createJsonRequest)
     }
@@ -976,14 +1020,18 @@ class MainActivity : Activity() {
                 createJsonRequest -> {
                     val stream = contentResolver.openOutputStream(uri)
                         ?: error("書き込み先を開けません")
-                    stream.use { it.write(map.asJson().toByteArray(Charsets.UTF_8)) }
-                    toast("JSONを書き出しました")
+                    val backup = BackupBundle.export(map, savedLayout, todoStore.exportJson())
+                    stream.use { it.write(backup.toByteArray(Charsets.UTF_8)) }
+                    toast("マップ・整列設定・ToDoをJSONに保存しました")
                 }
                 openJsonRequest -> {
                     val input = contentResolver.openInputStream(uri)
                         ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
                         ?: error("ファイルを開けません")
-                    confirmNewMap(MapState.parse(input))
+                    val parsed = BackupBundle.parse(input)
+                    parsed.todoJson?.let { todoStore.validateJson(it) }
+                    if (parsed.isCombined) confirmCombinedRestore(parsed)
+                    else confirmNewMap(parsed.map)
                 }
                 archiveExportRequest -> {
                     contentResolver.openOutputStream(uri)?.use {
