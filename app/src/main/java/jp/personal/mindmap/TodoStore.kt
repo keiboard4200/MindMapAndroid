@@ -15,7 +15,8 @@ data class TodoTask(
     // -1: off; 0: due; 60: one hour; 1440: one day.
     var remindBeforeMinutes: Int = -1,
     var priority: Int = 1,
-    var done: Boolean = false
+    var done: Boolean = false,
+    var completedAt: Long? = null
 )
 
 class TodoStore(private val context: Context) {
@@ -54,7 +55,8 @@ class TodoStore(private val context: Context) {
     fun addTask(task: TodoTask): TodoTask {
         require(tasks.size < 5000) { "ToDoの上限は5000件です" }
         val next = (tasks.maxOfOrNull { it.id } ?: 0L) + 1L
-        val created = task.copy(id = next)
+        val created = task.copy(id = next,
+            completedAt = if (task.done) task.completedAt ?: System.currentTimeMillis() else null)
         tasks.add(created)
         save()
         TodoNotifications.schedule(context, created)
@@ -70,6 +72,11 @@ class TodoStore(private val context: Context) {
         old.dueAt = task.dueAt
         old.remindBeforeMinutes = task.remindBeforeMinutes
         old.priority = task.priority
+        old.completedAt = when {
+            !task.done -> null
+            !old.done -> System.currentTimeMillis()
+            else -> old.completedAt
+        }
         old.done = task.done
         save()
         TodoNotifications.schedule(context, old)
@@ -77,6 +84,8 @@ class TodoStore(private val context: Context) {
 
     fun toggleDone(id: Long, done: Boolean) {
         val task = tasks.firstOrNull { it.id == id } ?: return
+        if (task.done == done) return
+        task.completedAt = if (done) System.currentTimeMillis() else null
         task.done = done
         save()
         if (done) TodoNotifications.cancel(context, id)
@@ -112,6 +121,7 @@ class TodoStore(private val context: Context) {
                     put("remindBeforeMinutes", task.remindBeforeMinutes)
                     put("priority", task.priority)
                     put("done", task.done)
+                    put("completedAt", task.completedAt ?: JSONObject.NULL)
                 }) }
             })
         }
@@ -152,7 +162,8 @@ class TodoStore(private val context: Context) {
                     item.optString("memo", "").take(20000),
                     if (item.isNull("dueAt")) null else item.getLong("dueAt"),
                     minutes, item.optInt("priority", 1).coerceIn(0, 2),
-                    item.optBoolean("done", false)
+                    item.optBoolean("done", false),
+                    if (item.isNull("completedAt")) null else item.getLong("completedAt")
                 ))
             }
             lists.clear(); lists.addAll(parsedLists)
@@ -178,32 +189,76 @@ class TodoStore(private val context: Context) {
         }.toString()
     }
 
-    fun importJson(json: String) {
+    /** Validate the entire payload BEFORE any disk write or alarm cancellation. */
+    fun validateJson(json: String) {
         val obj = JSONObject(json)
         require(obj.optString("format") == "mindmap-todo-v1") { "ToDo用JSONではありません" }
-        // Validate through a temporary file? Validate in memory before mutating current data.
         val arr = obj.getJSONArray("lists")
-        val tasksArr = obj.getJSONArray("tasks")
-        require(arr.length() in 1..100 && tasksArr.length() <= 5000) { "リスト数が不正です" }
-        val ids = mutableSetOf<Long>()
+        val entries = obj.getJSONArray("tasks")
+        require(arr.length() in 1..100 && entries.length() <= 5000) {
+            "ToDoのデータ数が不正です"
+        }
+        val listIds = mutableSetOf<Long>()
         for (i in 0 until arr.length()) {
-            val l = arr.getJSONObject(i)
-            require(l.getLong("id") > 0 && ids.add(l.getLong("id")))
+            val list = arr.getJSONObject(i)
+            require(list.getLong("id") > 0 && listIds.add(list.getLong("id")))
+            require(list.getString("name").length <= 100)
         }
-        val taskIds = mutableSetOf<Long>()
-        for (i in 0 until tasksArr.length()) {
-            val t = tasksArr.getJSONObject(i)
+        val current = obj.optLong("currentListId", arr.getJSONObject(0).getLong("id"))
+        require(current in listIds) { "選択中のリストが見つかりません" }
+        val ids = mutableSetOf<Long>()
+        for (i in 0 until entries.length()) {
+            val t = entries.getJSONObject(i)
             val id = t.getLong("id")
-            require(id > 0 && taskIds.add(id) && t.getLong("listId") in ids)
+            require(id > 0 && ids.add(id) && t.getLong("listId") in listIds)
+            require(t.getString("title").length <= 300)
+            require(t.optString("memo", "").length <= 20000)
+            require(t.optInt("remindBeforeMinutes", -1) in listOf(-1, 0, 60, 1440))
+            require(t.optInt("priority", 1) in 0..2)
             if (!t.isNull("dueAt")) require(t.getLong("dueAt") > 0L)
-            require(t.optInt("remindBeforeMinutes", -1) in listOf(-1,0,60,1440))
+            if (!t.isNull("completedAt")) {
+                require(t.getLong("completedAt") > 0L)
+                require(t.optBoolean("done", false)) {
+                    "未完了のToDoに完了日時が設定されています"
+                }
+            }
         }
-        tasks.forEach { TodoNotifications.cancel(context, it.id) }
+    }
+
+    fun importJson(json: String) {
+        validateJson(json)
+        val obj = JSONObject(json)
+        val incomingLists = mutableListOf<TodoList>()
+        val incomingTasks = mutableListOf<TodoTask>()
+        val listArr = obj.getJSONArray("lists")
+        val taskArr = obj.getJSONArray("tasks")
+        for (i in 0 until listArr.length()) {
+            val l = listArr.getJSONObject(i)
+            incomingLists.add(TodoList(l.getLong("id"), l.getString("name")))
+        }
+        for (i in 0 until taskArr.length()) {
+            val t = taskArr.getJSONObject(i)
+            incomingTasks.add(TodoTask(
+                t.getLong("id"), t.getLong("listId"), t.getString("title"),
+                t.optString("memo", ""),
+                if (t.isNull("dueAt")) null else t.getLong("dueAt"),
+                t.optInt("remindBeforeMinutes", -1),
+                t.optInt("priority", 1),
+                t.optBoolean("done", false),
+                if (t.isNull("completedAt")) null else t.getLong("completedAt")
+            ))
+        }
         val tmp = File(context.filesDir, "todos.json.import.tmp")
         tmp.writeText(obj.toString(), Charsets.UTF_8)
-        if (!tmp.renameTo(file)) { tmp.copyTo(file, overwrite = true); tmp.delete() }
-        lists.clear(); tasks.clear()
-        load()
+        if (!tmp.renameTo(file)) {
+            tmp.copyTo(file, overwrite = true)
+            tmp.delete()
+        }
+        tasks.forEach { TodoNotifications.cancel(context, it.id) }
+        lists.clear(); lists.addAll(incomingLists)
+        tasks.clear(); tasks.addAll(incomingTasks)
+        currentListId = obj.optLong("currentListId", lists.first().id)
         rescheduleAll()
     }
+
 }
