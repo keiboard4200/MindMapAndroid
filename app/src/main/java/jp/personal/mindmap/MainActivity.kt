@@ -21,6 +21,8 @@ import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.HorizontalScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.util.ArrayDeque
@@ -44,6 +46,7 @@ class MainActivity : Activity() {
     private val redoStack = ArrayDeque<String>()
     private var branchMode = false
     private var map = MapState.blank()
+    private val mapLibrary by lazy { MapLibrary(this) }
     private val archiveStore by lazy { ArchiveStore(this) }
     private var clipboardJson: String? = null
     private val createJsonRequest = 101
@@ -56,12 +59,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        map = try {
-            val file = getFileStreamPath("mindmap.json")
-            if (file.exists()) MapState.parse(file.readText(Charsets.UTF_8)) else MapState.blank()
-        } catch (_: Exception) {
-            MapState.blank()
-        }
+        map = mapLibrary.active().map
         savedLayout = readLayoutSettings()
         clipboardJson = getSharedPreferences("map_clipboard", MODE_PRIVATE)
             .getString("snapshot", null)
@@ -85,14 +83,15 @@ class MainActivity : Activity() {
         minimumHeight = 0
         setPadding(dp(4), 0, dp(4), 0)
         setTextColor(Color.rgb(233, 242, 253))
-        backgroundTintList = ColorStateList.valueOf(Color.rgb(37, 50, 67))
+        background = UiStyle.rounded(this@MainActivity)
+        elevation = 0f
         setOnClickListener { onClick() }
     }
 
     private fun setupScreen() {
         val main = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(16, 22, 32))
+            setBackgroundColor(UiStyle.background)
         }
         main.setOnApplyWindowInsetsListener { view, insets ->
             val safe = if (android.os.Build.VERSION.SDK_INT >= 30)
@@ -106,7 +105,8 @@ class MainActivity : Activity() {
         val tabs = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(3), dp(10), dp(3))
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setBackgroundColor(UiStyle.panel)
         }
         mapTab = actionButton("マインドマップ") { selectMode(false) }
         todoTab = actionButton("ToDoリスト") { selectMode(true) }
@@ -114,32 +114,37 @@ class MainActivity : Activity() {
         tabs.addView(todoTab, LinearLayout.LayoutParams(0, dp(49), 1f))
         main.addView(tabs)
 
-        mapPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        mapPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(UiStyle.background)
+        }
 
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(9), 0, dp(9), 0)
+            setPadding(dp(11), dp(9), dp(11), dp(8))
+            setBackgroundColor(UiStyle.panel)
         }
         titleView = TextView(this).apply {
-            text = map.title
-            textSize = 16f
-            setTextColor(Color.rgb(237, 244, 252))
+            text = "▦  ${map.title}  ▾"
+            textSize = 17f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(UiStyle.text)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
-            setOnClickListener { renameMap() }
+            setOnClickListener { showMapManager() }
         }
         top.addView(titleView, LinearLayout.LayoutParams(0, dp(52), 1f).apply {
             gravity = Gravity.CENTER_VERTICAL
         })
         top.addView(actionButton("整列") { executeSavedLayout() },
-            LinearLayout.LayoutParams(dp(56), dp(48)))
+            LinearLayout.LayoutParams(dp(56), dp(46)).apply { marginEnd = dp(5) })
         top.addView(actionButton("設定") { showAutoLayoutDialog() },
-            LinearLayout.LayoutParams(dp(54), dp(48)))
+            LinearLayout.LayoutParams(dp(54), dp(46)).apply { marginEnd = dp(5) })
         top.addView(actionButton("全体") { canvas.fitAll() },
-            LinearLayout.LayoutParams(dp(60), dp(48)))
+            LinearLayout.LayoutParams(dp(58), dp(46)).apply { marginEnd = dp(5) })
         top.addView(actionButton("⋮") { showAppMenu() },
-            LinearLayout.LayoutParams(dp(48), dp(48)))
+            LinearLayout.LayoutParams(dp(43), dp(46)))
         mapPanel.addView(top)
 
         canvas = MindMapView(this)
@@ -147,10 +152,7 @@ class MainActivity : Activity() {
             branchMode = false
             canvas.groupDrag = false
             modeButton.text = "単独"
-            titleView.text = if (id != null) {
-                val node = map.find(id)
-                "${node?.title ?: ""} · ${map.descendants(id).size}件"
-            } else map.title
+            updateMapTitle()
         }
         canvas.onEditRequested = { id -> showNodeMenu(id) }
         canvas.onDoubleTap = { id -> editNodeDetails(id) }
@@ -176,12 +178,15 @@ class MainActivity : Activity() {
 
         val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(dp(4), dp(3), dp(4), dp(4))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(7), dp(10), dp(8))
+            setBackgroundColor(UiStyle.panel)
         }
         fun addBottom(label: String, click: () -> Unit): Button {
             val button = actionButton(label, click)
-            bottom.addView(button, LinearLayout.LayoutParams(0, dp(54), 1f))
+            bottom.addView(button, LinearLayout.LayoutParams(dp(74), dp(47)).apply {
+                marginEnd = dp(6)
+            })
             return button
         }
         addBottom("＋ 子") { addChild() }
@@ -197,7 +202,11 @@ class MainActivity : Activity() {
         addBottom("削除") { deleteSelected() }
         addBottom("↶") { undo() }
         addBottom("↷") { redo() }
-        mapPanel.addView(bottom)
+        val bottomScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(bottom)
+        }
+        mapPanel.addView(bottomScroll)
         main.addView(mapPanel, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
@@ -215,10 +224,10 @@ class MainActivity : Activity() {
     private fun selectMode(todo: Boolean) {
         mapPanel.visibility = if (todo) View.GONE else View.VISIBLE
         todoPanel.visibility = if (todo) View.VISIBLE else View.GONE
-        mapTab.backgroundTintList = ColorStateList.valueOf(
-            if (!todo) Color.rgb(48, 111, 171) else Color.rgb(37, 50, 67))
-        todoTab.backgroundTintList = ColorStateList.valueOf(
-            if (todo) Color.rgb(48, 111, 171) else Color.rgb(37, 50, 67))
+        mapTab.background = UiStyle.rounded(this,
+            if (!todo) UiStyle.accentSurface else UiStyle.raised)
+        todoTab.background = UiStyle.rounded(this,
+            if (todo) UiStyle.accentSurface else UiStyle.raised)
         if (todo) todoPanel.refresh()
     }
 
@@ -296,9 +305,10 @@ class MainActivity : Activity() {
     private fun replaceMap(next: MapState, preserveViewport: Boolean = false) {
         val oldSelection = canvas.selectedId
         map = next
+        mapLibrary.replaceActive(next)
         canvas.map = map
         canvas.select(if (preserveViewport && map.find(oldSelection) != null) oldSelection else null)
-        titleView.text = map.title
+        updateMapTitle()
         branchMode = false
         canvas.groupDrag = false
         modeButton.text = "単独"
@@ -306,17 +316,15 @@ class MainActivity : Activity() {
         save()
     }
 
+    private fun updateMapTitle() {
+        if (::titleView.isInitialized) titleView.text = "▦  ${map.title}  ▾"
+    }
+
     private fun save() {
         try {
-            val output = getFileStreamPath("mindmap.json")
-            val temp = getFileStreamPath("mindmap.json.tmp")
-            temp.writeText(map.asJson(), Charsets.UTF_8)
-            if (!temp.renameTo(output)) {
-                temp.copyTo(output, overwrite = true)
-                temp.delete()
-            }
+            mapLibrary.replaceActive(map)
         } catch (ex: Exception) {
-            toast("保存失敗: ${ex.message}")
+            toast("マップの保存に失敗しました: ${ex.message}")
         }
     }
 
@@ -463,7 +471,7 @@ class MainActivity : Activity() {
     private fun renameMap() {
         inputDialog("マップ名", map.title) { input ->
             editTransaction { map.title = input.take(200) }
-            titleView.text = map.title
+            updateMapTitle()
         }
     }
 
