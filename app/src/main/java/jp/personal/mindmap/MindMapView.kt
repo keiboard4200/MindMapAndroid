@@ -71,7 +71,7 @@ class MindMapView(context: Context) : View(context) {
 
     init {
         isClickable = true
-        setBackgroundColor(Color.rgb(16, 22, 32))
+        setBackgroundColor(UiStyle.background)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -185,6 +185,19 @@ class MindMapView(context: Context) : View(context) {
         super.onDraw(c)
         paint.reset()
         paint.isAntiAlias = true
+        // Quiet position guides behind nodes, unaffected by pan and zoom.
+        paint.color = Color.rgb(36, 53, 71)
+        paint.style = Paint.Style.FILL
+        val grid = 44f * densityScale
+        var gx = ((originX % grid) + grid) % grid
+        while (gx < width) {
+            var gy = ((originY % grid) + grid) % grid
+            while (gy < height) {
+                c.drawCircle(gx, gy, 0.95f * densityScale, paint)
+                gy += grid
+            }
+            gx += grid
+        }
         val visible = map.visibleNodes(zoom)
         val ids = visible.mapTo(mutableSetOf()) { it.id }
         c.save()
@@ -217,13 +230,13 @@ class MindMapView(context: Context) : View(context) {
             rect.set(left, top, left + m.width, top + m.height)
             paint.style = Paint.Style.FILL
             paint.color = n.color
-            c.drawRoundRect(rect, 10f, 10f, paint)
+            c.drawRoundRect(rect, 13f, 13f, paint)
             if (selectedId == n.id) {
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 2.8f
                 paint.color = Color.rgb(231, 242, 253)
                 rect.inset(-2f, -2f)
-                c.drawRoundRect(rect, 11f, 11f, paint)
+                c.drawRoundRect(rect, 14f, 14f, paint)
                 rect.inset(2f, 2f)
             }
 
