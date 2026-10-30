@@ -29,10 +29,10 @@ class TodoPanel(
     private val exportBackup: () -> Unit,
     private val importBackup: () -> Unit
 ) : LinearLayout(activity) {
-    private val bg = Color.rgb(16, 22, 32)
-    private val fg = Color.rgb(237, 244, 252)
-    private val muted = Color.rgb(177, 196, 218)
-    private val surface = Color.rgb(35, 48, 65)
+    private val bg = UiStyle.background
+    private val fg = UiStyle.text
+    private val muted = UiStyle.muted
+    private val surface = UiStyle.raised
     private val format = SimpleDateFormat("yyyy/MM/dd (E) HH:mm", Locale.JAPAN)
     private val completedFormat = SimpleDateFormat("yy/MM/dd_HH:mm", Locale.JAPAN)
     private val listButton = button("")
@@ -67,7 +67,10 @@ class TodoPanel(
         addView(filters)
         val scroll = ScrollView(activity).apply { addView(content); isFillViewport = true }
         addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
-        addView(button("＋ ToDoを追加").apply { setOnClickListener { editTask(null) } },
+        addView(button("＋ ToDoを追加").apply {
+            background = UiStyle.rounded(activity, UiStyle.accentSurface)
+            setOnClickListener { editTask(null) }
+        },
             LayoutParams(LayoutParams.MATCH_PARENT, dp(55)))
         refresh()
     }
@@ -77,8 +80,9 @@ class TodoPanel(
         text = t; isAllCaps = false; textSize = 12f
         minHeight = 0; minimumHeight = 0
         setTextColor(fg)
-        backgroundTintList = ColorStateList.valueOf(surface)
-        setPadding(dp(6), 0, dp(6), 0)
+        background = UiStyle.rounded(activity)
+        elevation = 0f
+        setPadding(dp(8), dp(2), dp(8), dp(2))
     }
     private fun label(t: String, size: Float = 14f, color: Int = fg): TextView =
         TextView(activity).apply {
@@ -98,8 +102,8 @@ class TodoPanel(
         stats.text = "未完了 " + open + " / 全" + tasks.size + "件" +
             if (overdue > 0) " · 期限超過" + overdue + "件" else ""
         filterButtons.forEachIndexed { index, button ->
-            button.backgroundTintList = ColorStateList.valueOf(
-                if (filter == index) Color.rgb(46, 106, 158) else surface)
+            button.background = UiStyle.rounded(activity,
+                if (filter == index) UiStyle.accentSurface else UiStyle.raised)
         }
         content.removeAllViews()
         val visible = tasks.filter {
@@ -115,8 +119,9 @@ class TodoPanel(
         for (task in visible) {
             val card = LinearLayout(activity).apply {
                 orientation = VERTICAL
-                setBackgroundColor(surface)
-                setPadding(dp(8), dp(5), dp(8), dp(7))
+                background = UiStyle.rounded(activity, UiStyle.panel, 14f)
+                elevation = dp(1).toFloat()
+                setPadding(dp(12), dp(9), dp(12), dp(10))
             }
             val row = row()
             row.addView(CheckBox(activity).apply {
