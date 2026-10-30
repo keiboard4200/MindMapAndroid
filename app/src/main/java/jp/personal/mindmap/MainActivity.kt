@@ -855,6 +855,7 @@ class MainActivity : Activity() {
 
     private fun showAppMenu() {
         val options = arrayOf(
+            "マップライブラリを開く",
             "＋ 独立ルートを追加",
             "選択ノードをコピー",
             "選択ノードの枝をコピー",
@@ -874,37 +875,112 @@ class MainActivity : Activity() {
         )
         AlertDialog.Builder(this).setTitle("マップ操作").setItems(options) { _, which ->
             when (which) {
-                0 -> addIndependentRoot()
-                1 -> canvas.selectedId?.let { copyNode(it, false) }
+                0 -> showMapManager()
+                1 -> addIndependentRoot()
+                2 -> canvas.selectedId?.let { copyNode(it, false) }
                     ?: toast("コピーするノードを選択してください")
-                2 -> canvas.selectedId?.let { copyNode(it, true) }
+                3 -> canvas.selectedId?.let { copyNode(it, true) }
                     ?: toast("コピーするノードを選択してください")
-                3 -> showPasteMenu()
-                4 -> canvas.selectedId?.let { archiveRoot(it) }
+                4 -> showPasteMenu()
+                5 -> canvas.selectedId?.let { archiveRoot(it) }
                     ?: toast("ルートノードを選択してください")
-                5 -> showArchives()
-                6 -> showAutoLayoutDialog()
-                7 -> executeSavedLayout()
-                8 -> canvas.fitAll()
-                9 -> confirmNewMap(MapState.blank())
-                10 -> confirmNewMap(MapState.sample100())
-                11 -> exportJson()
-                12 -> importJson()
-                13 -> showHelp()
-                14 -> exportArchive()
-                15 -> importArchive()
+                6 -> showArchives()
+                7 -> showAutoLayoutDialog()
+                8 -> executeSavedLayout()
+                9 -> canvas.fitAll()
+                10 -> confirmNewMap(MapState.blank())
+                11 -> confirmNewMap(MapState.sample100())
+                12 -> exportJson()
+                13 -> importJson()
+                14 -> showHelp()
+                15 -> exportArchive()
+                16 -> importArchive()
             }
         }.show()
     }
 
+    private fun openMap(id: Long) {
+        if (mapLibrary.activeId == id) return
+        try {
+            save()
+            mapLibrary.select(id)
+            undoStack.clear(); redoStack.clear()
+            replaceMap(mapLibrary.active().map)
+            toast("マップを切り替えました")
+        } catch (ex: Exception) { showError("マップを開けませんでした", ex) }
+    }
+
+    private fun showMapManager() {
+        MapManagerDialog(
+            this, mapLibrary,
+            onCreate = {
+                inputDialog("マップ名", "", "新しいマップのタイトル") { title ->
+                    try {
+                        save()
+                        val fresh = MapState.blank().apply { this.title = title.take(200) }
+                        mapLibrary.add(fresh)
+                        undoStack.clear(); redoStack.clear()
+                        replaceMap(fresh)
+                        toast("新しいマップを作成しました")
+                    } catch (ex: Exception) { showError("マップを作成できませんでした", ex) }
+                }
+            },
+            onOpen = { id -> openMap(id) },
+            onRename = { id ->
+                val entry = mapLibrary.entries.firstOrNull { it.id == id }
+                if (entry != null) inputDialog("マップの名前", entry.map.title) { name ->
+                    try {
+                        mapLibrary.rename(id, name)
+                        if (id == mapLibrary.activeId) updateMapTitle()
+                        toast("マップ名を変更しました")
+                    } catch (ex: Exception) { showError("変更できませんでした", ex) }
+                }
+            },
+            onDuplicate = { id ->
+                try {
+                    save()
+                    val item = mapLibrary.duplicate(id)
+                    undoStack.clear(); redoStack.clear()
+                    replaceMap(item.map)
+                    toast("マップを複製しました")
+                } catch (ex: Exception) { showError("複製できませんでした", ex) }
+            },
+            onDelete = { id ->
+                if (mapLibrary.size <= 1) {
+                    toast("最後のマップは削除できません")
+                } else {
+                    val entry = mapLibrary.entries.firstOrNull { it.id == id }
+                    if (entry != null) AlertDialog.Builder(this)
+                        .setTitle("マップを削除")
+                        .setMessage("「" + entry.map.title +
+                            "」の全ノードを削除します。元に戻せません。先にJSONをバックアップしてください。")
+                        .setNegativeButton("キャンセル", null)
+                        .setPositiveButton("削除") { _, _ ->
+                            try {
+                                val active = mapLibrary.activeId == id
+                                mapLibrary.delete(id)
+                                undoStack.clear(); redoStack.clear()
+                                if (active) replaceMap(mapLibrary.active().map)
+                                toast("マップを削除しました")
+                            } catch (ex: Exception) { showError("削除できませんでした", ex) }
+                        }.show()
+                }
+            }
+        ).show()
+    }
+
     private fun confirmNewMap(next: MapState) {
-        AlertDialog.Builder(this).setTitle("マップを切り替えますか？")
-            .setMessage("現在のマップは端末内で上書きされます。必要なら先にJSONを書き出してください。")
+        AlertDialog.Builder(this).setTitle("マップを追加")
+            .setMessage("新しいマップ「" + next.title +
+                "」を追加します。今のマップは保存したまま残します。")
             .setNegativeButton("キャンセル", null)
-            .setPositiveButton("切り替え") { _, _ ->
-                undoStack.clear()
-                redoStack.clear()
-                replaceMap(next)
+            .setPositiveButton("作成") { _, _ ->
+                try {
+                    save()
+                    mapLibrary.add(next)
+                    undoStack.clear(); redoStack.clear()
+                    replaceMap(next)
+                } catch (ex: Exception) { showError("マップの追加に失敗しました", ex) }
             }.show()
     }
 
@@ -921,6 +997,7 @@ class MainActivity : Activity() {
             "・上部「設定」：整列設定を保存\n" +
             "・左の目：コメント表示切替／右の＋−：子ノード表示切替\n" +
             "・長押し：ノードのみ／枝ごとコピー、貼り付け、削除\n" +
+            "・タイトル：マップライブラリの一覧・切替\n" +
             "・⋮：独立ルートの追加、ルートのアーカイブ\n" +
             "・全体：マップ全体を表示\n" +
             "・大切なデータはJSONでバックアップしてください"
