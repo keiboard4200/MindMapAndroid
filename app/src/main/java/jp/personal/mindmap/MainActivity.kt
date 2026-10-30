@@ -867,7 +867,7 @@ class MainActivity : Activity() {
             "全体にフィット",
             "新しいマップ",
             "100ノードのテストマップ",
-            "JSONを書き出す（マップ＋整列＋ToDo）",
+            "JSON出力（全マップ＋整列＋ToDo）",
             "JSONを読み込む",
             "操作方法",
             "アーカイブを書き出す（バックアップ）",
@@ -1008,35 +1008,40 @@ class MainActivity : Activity() {
         val todoJson = backup.todoJson ?: return
         val layout = backup.layout ?: return
         val todoCount = org.json.JSONObject(todoJson).getJSONArray("tasks").length()
+        val mapCount = if (backup.libraryJson != null)
+            MapLibraryPayload.parse(backup.libraryJson).entries.size else 1
+        val effect = if (backup.libraryJson != null) "現在のマップライブラリ全体" else
+            "現在開いているマップ"
         AlertDialog.Builder(this).setTitle("バックアップを復元")
-            .setMessage(
-                "マインドマップ（${backup.map.nodes.size}ノード）、" +
-                "整列設定、ToDo（${todoCount}件）を復元します。" +
-                "現在のマップ・整列設定・ToDoは上書きされます。" +
-                "アーカイブには影響しません。続けますか？"
-            )
+            .setMessage(mapCount.toString() + "マップ、整列設定、ToDo " +
+                todoCount + "件を復元します。" + effect +
+                "・整列設定・ToDoを上書きします。アーカイブは変更しません。")
             .setNegativeButton("キャンセル", null)
-            .setPositiveButton("すべて復元") { _, _ ->
-                val previousMap = map.asJson()
+            .setPositiveButton("復元") { _, _ ->
+                val previousLibrary = mapLibrary.asJson()
                 val previousTodos = todoStore.exportJson()
                 val previousLayout = savedLayout
                 try {
-                    // All sections are validated before confirming. Apply the
-                    // backup only after the user explicitly approves replacement.
                     todoStore.importJson(todoJson)
                     savedLayout = layout
                     persistLayoutSettings(layout)
-                    replaceMap(backup.map)
+                    if (backup.libraryJson != null) {
+                        mapLibrary.importLibrary(backup.libraryJson)
+                        replaceMap(mapLibrary.active().map)
+                    } else {
+                        replaceMap(backup.map)
+                    }
                     undoStack.clear()
                     redoStack.clear()
                     todoPanel.refresh()
-                    toast("マップ・整列設定・ToDoを復元しました")
+                    toast("バックアップを復元しました")
                 } catch (ex: Exception) {
                     runCatching {
+                        mapLibrary.importLibrary(previousLibrary)
                         todoStore.importJson(previousTodos)
                         savedLayout = previousLayout
                         persistLayoutSettings(previousLayout)
-                        replaceMap(MapState.parse(previousMap))
+                        replaceMap(mapLibrary.active().map)
                         todoPanel.refresh()
                     }
                     showError("復元に失敗しました", ex)
@@ -1048,7 +1053,7 @@ class MainActivity : Activity() {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/json"
-            putExtra(Intent.EXTRA_TITLE, "mindmap-full-backup.json")
+            putExtra(Intent.EXTRA_TITLE, "mindmap-all-maps-backup.json")
         }
         startActivityForResult(intent, createJsonRequest)
     }
@@ -1105,9 +1110,9 @@ class MainActivity : Activity() {
                 createJsonRequest -> {
                     val stream = contentResolver.openOutputStream(uri)
                         ?: error("書き込み先を開けません")
-                    val backup = BackupBundle.export(map, savedLayout, todoStore.exportJson())
+                    val backup = BackupBundle.exportLibrary(mapLibrary, savedLayout, todoStore.exportJson())
                     stream.use { it.write(backup.toByteArray(Charsets.UTF_8)) }
-                    toast("マップ・整列設定・ToDoをJSONに保存しました")
+                    toast("全マップ・整列設定・ToDoをJSONに保存しました")
                 }
                 openJsonRequest -> {
                     val input = contentResolver.openInputStream(uri)
