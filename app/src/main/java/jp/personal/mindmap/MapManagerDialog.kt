@@ -100,6 +100,6 @@ class MapManagerDialog(
         dialog = AlertDialog.Builder(activity)
             .setTitle("マップライブラリ  •  " + library.size + " 件")
             .setView(scroll).setPositiveButton("閉じる", null).create()
-        dialog.show()
+        dialog?.show()
     }
 }
